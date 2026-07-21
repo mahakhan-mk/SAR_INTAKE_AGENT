@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.database import AssessmentResponse, QuestionDefinition, QuestionOption, QuestionnaireVersion, SarAssessment
 from app.models.dto import TriagedQuestionLoadResult, TriagedQuestionResponse
@@ -13,33 +13,37 @@ VENDOR_REPUTATION_DOMAIN = "Vendor Reputation"
 
 
 class AssessmentRepository:
-    def get_assessment(self, session: Session, assessment_id: str) -> SarAssessment | None:
-        return session.get(SarAssessment, assessment_id)
+    async def get_assessment(self, session: AsyncSession, assessment_id: str) -> SarAssessment | None:
+        return await session.get(SarAssessment, assessment_id)
 
-    def load_active_triage_question_responses(
+    async def load_active_triage_question_responses(
         self,
-        session: Session,
+        session: AsyncSession,
         assessment_id: str,
     ) -> TriagedQuestionLoadResult:
-        version = session.execute(
+        version = (
+            await session.execute(
             select(QuestionnaireVersion)
             .where(
                 QuestionnaireVersion.questionnaire_type == QuestionnaireType.TRIAGE.value,
                 QuestionnaireVersion.is_active.is_(True),
             )
             .order_by(QuestionnaireVersion.created_at.desc(), QuestionnaireVersion.id.desc())
+            )
         ).scalars().first()
 
         if version is None:
             return TriagedQuestionLoadResult(question_responses=[], required_triage_question_count=0)
 
-        questions = session.execute(
+        questions = (
+            await session.execute(
             select(QuestionDefinition)
             .where(
                 QuestionDefinition.questionnaire_version_id == version.id,
                 QuestionDefinition.risk_domain != VENDOR_REPUTATION_DOMAIN,
             )
             .order_by(QuestionDefinition.display_order.asc(), QuestionDefinition.id.asc())
+            )
         ).scalars().all()
 
         if not questions:
@@ -48,13 +52,15 @@ class AssessmentRepository:
         question_ids = [question.id for question in questions]
         question_by_id = {question.id: question for question in questions}
 
-        responses = session.execute(
+        responses = (
+            await session.execute(
             select(AssessmentResponse)
             .where(
                 AssessmentResponse.assessment_id == assessment_id,
                 AssessmentResponse.question_definition_id.in_(question_ids),
             )
             .order_by(AssessmentResponse.created_at.asc(), AssessmentResponse.id.asc())
+            )
         ).scalars().all()
 
         if not responses:
@@ -63,10 +69,12 @@ class AssessmentRepository:
                 required_triage_question_count=sum(1 for question in questions if question.is_required),
             )
 
-        options = session.execute(
+        options = (
+            await session.execute(
             select(QuestionOption)
             .where(QuestionOption.question_definition_id.in_(question_ids))
             .order_by(QuestionOption.display_order.asc(), QuestionOption.id.asc())
+            )
         ).scalars().all()
 
         option_by_id = {option.id: option for option in options}

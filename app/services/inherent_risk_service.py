@@ -4,7 +4,7 @@ import json
 from collections import defaultdict
 from typing import Sequence
 
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.errors import AssessmentNotFoundError
 from app.assemblers.inherent_risk_assembler import InherentRiskAssembler
@@ -41,14 +41,14 @@ class InherentRiskService:
         self.assembler = assembler
         self.scoring_policy = scoring_policy
 
-    def get_inherent_risk_screen(self, session: Session, assessment_id: str):
-        assessment = self.assessment_repository.get_assessment(session, assessment_id)
+    async def get_inherent_risk_screen(self, session: AsyncSession, assessment_id: str):
+        assessment = await self.assessment_repository.get_assessment(session, assessment_id)
         if assessment is None:
             raise AssessmentNotFoundError()
 
-        snapshot = self.analysis_repository.get_latest_completed_snapshot(session, assessment_id)
+        snapshot = await self.analysis_repository.get_latest_completed_snapshot(session, assessment_id)
         if snapshot is None:
-            snapshot = self._create_and_persist_analysis(
+            snapshot = await self._create_and_persist_analysis(
                 session=session,
                 assessment_id=assessment_id,
                 persist_empty_run=False,
@@ -59,19 +59,19 @@ class InherentRiskService:
 
         return self.assembler.to_dto(self._build_state_from_snapshot(assessment_id, snapshot))
 
-    def create_analysis_run(
+    async def create_analysis_run(
         self,
-        session: Session,
+        session: AsyncSession,
         assessment_id: str,
         force: bool = False,
     ) -> AnalysisRunCreateResponseDTO:
         del force
 
-        assessment = self.assessment_repository.get_assessment(session, assessment_id)
+        assessment = await self.assessment_repository.get_assessment(session, assessment_id)
         if assessment is None:
             raise AssessmentNotFoundError()
 
-        snapshot = self._create_and_persist_analysis(
+        snapshot = await self._create_and_persist_analysis(
             session=session,
             assessment_id=assessment_id,
             persist_empty_run=True,
@@ -125,13 +125,16 @@ class InherentRiskService:
             source_text=SOURCE_TEXT,
         )
 
-    def _create_and_persist_analysis(
+    async def _create_and_persist_analysis(
         self,
-        session: Session,
+        session: AsyncSession,
         assessment_id: str,
         persist_empty_run: bool,
     ) -> StoredAnalysisSnapshot | None:
-        triage_payload = self.assessment_repository.load_active_triage_question_responses(session, assessment_id)
+        triage_payload = await self.assessment_repository.load_active_triage_question_responses(
+            session,
+            assessment_id,
+        )
         if not triage_payload.question_responses and not persist_empty_run:
             return None
 
@@ -156,7 +159,7 @@ class InherentRiskService:
         limitation_summary = " ".join(dict.fromkeys(limitations)) if limitations else None
 
         try:
-            run = self.analysis_repository.create_analysis_run(
+            run = await self.analysis_repository.create_analysis_run(
                 session=session,
                 assessment_id=assessment_id,
                 status=status,
@@ -167,11 +170,11 @@ class InherentRiskService:
                 source_text=SOURCE_TEXT,
                 limitation_summary=limitation_summary,
             )
-            self.analysis_repository.upsert_question_risk_results(session, run.id, question_results)
-            session.commit()
+            await self.analysis_repository.upsert_question_risk_results(session, run.id, question_results)
+            await session.commit()
         except Exception as exc:
-            session.rollback()
-            failed_run = self.analysis_repository.create_analysis_run(
+            await session.rollback()
+            failed_run = await self.analysis_repository.create_analysis_run(
                 session=session,
                 assessment_id=assessment_id,
                 status=AnalysisRunStatus.FAILED,
@@ -182,7 +185,7 @@ class InherentRiskService:
                 source_text=SOURCE_TEXT,
                 failure_reason=str(exc),
             )
-            session.commit()
+            await session.commit()
             return StoredAnalysisSnapshot(
                 analysis_run_id=failed_run.id,
                 status=AnalysisRunStatus.FAILED,
