@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from app.models.enums import AnalysisRunStatus, ExecutiveSummaryStatus, RiskLevel
 
@@ -149,3 +149,56 @@ class ExecutiveSummaryGenerateResponseDTO(BaseModel):
     assessmentId: str
     analysisRunId: str
     executiveSummary: ExecutiveSummaryGenerateEnvelopeDTO
+
+
+class IntakeHeaderDTO(BaseModel):
+    technologyName: str | None
+    sourceSystem: str | None
+    questionnaireVersion: str | None
+
+
+class IntakeQuestionDTO(BaseModel):
+    questionId: str
+    questionCode: str
+    label: str
+    answer: str | None
+    responseType: str
+    required: bool
+    riskDomain: str
+
+
+class IntakeSectionDTO(BaseModel):
+    code: str
+    title: str
+    questions: list[IntakeQuestionDTO]
+
+
+class IntakeTriageQuestionDTO(BaseModel):
+    questionId: str
+    questionCode: str
+    label: str
+    answer: str | None
+
+
+class IntakeOverviewResponseDTO(BaseModel):
+    assessmentId: str
+    header: IntakeHeaderDTO
+    sections: list[IntakeSectionDTO]
+    triage: list[IntakeTriageQuestionDTO]
+
+
+class IntakeQuestionUpdateRequestDTO(BaseModel):
+    selectedOptionId: str | None = None
+    answerValue: str | None = None
+
+    @model_validator(mode="after")
+    def validate_at_least_one_field_was_provided(self) -> "IntakeQuestionUpdateRequestDTO":
+        if "selectedOptionId" not in self.model_fields_set and "answerValue" not in self.model_fields_set:
+            raise ValueError("At least one of selectedOptionId or answerValue must be provided.")
+        return self
+
+
+class IntakeQuestionUpdateResponseDTO(BaseModel):
+    questionId: str
+    selectedOptionId: str | None
+    answerValue: str | None

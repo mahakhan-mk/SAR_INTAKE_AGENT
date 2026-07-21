@@ -28,15 +28,79 @@ Response
 ```json
 {
   "assessmentId": "uuid",
-  "technologyName": "Microsoft 365 Copilot",
+  "header": {
+    "technologyName": "Microsoft 365 Copilot",
+    "sourceSystem": null,
+    "questionnaireVersion": "intake-v1"
+  },
   "sections": [
     {
+      "code": "general",
       "title": "General",
-      "questions": []
+      "questions": [
+        {
+          "questionId": "uuid",
+          "questionCode": "GEN-001",
+          "label": "What is the solution called?",
+          "answer": "Selected",
+          "responseType": "single_select",
+          "required": true,
+          "riskDomain": "Operations"
+        }
+      ]
+    }
+  ],
+  "triage": [
+    {
+      "questionId": "uuid",
+      "questionCode": "TRIAGE-001",
+      "label": "Does it handle sensitive data?",
+      "answer": "Yes"
     }
   ]
 }
 ```
+
+Behavior
+
+- Returns `404` when `assessmentId` does not exist.
+- Returns only visible intake questions ordered by `section_code` then `question_order`.
+- Returns only visible triage questions ordered by `question_order`.
+- Resolves selected option labels into `answer` when `selected_option_id` is present.
+
+---
+
+## PATCH /api/v1/assessments/{assessmentId}/questions/{questionId}
+
+Creates or updates the stored response for a single intake/triage question.
+
+Request
+
+```json
+{
+  "selectedOptionId": "uuid",
+  "answerValue": "Yes"
+}
+```
+
+Response
+
+```json
+{
+  "questionId": "uuid",
+  "selectedOptionId": "uuid",
+  "answerValue": "Yes"
+}
+```
+
+Behavior
+
+- Returns `404` when `assessmentId` does not exist.
+- Returns `404` when `questionId` does not exist.
+- Returns `404` when the question exists but is not visible.
+- Returns `400` when `selectedOptionId` does not belong to the specified question.
+- Returns `422` when both request fields are omitted.
+- Preserves omitted fields and allows explicit `null` values to clear stored data.
 
 ---
 
