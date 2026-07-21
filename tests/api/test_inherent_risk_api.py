@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from uuid import uuid4
+import uuid
 
 import pytest
 from sqlalchemy import select
@@ -27,14 +27,14 @@ class FakeAzureSummaryClient:
 
 
 async def test_get_endpoint_returns_404_for_missing_assessment(client):
-    response = await client.get(f"/api/v1/assessments/{uuid4()}/inherent-risk")
+    response = await client.get(f"/api/v1/assessments/{uuid.uuid4()}/inherent-risk")
 
     assert response.status_code == 404
     assert response.json() == {"detail": "Assessment not found."}
 
 
 async def test_post_analysis_run_returns_404_for_missing_assessment(client):
-    response = await client.post(f"/api/v1/assessments/{uuid4()}/analysis-runs", json={"force": False})
+    response = await client.post(f"/api/v1/assessments/{uuid.uuid4()}/analysis-runs", json={"force": False})
 
     assert response.status_code == 404
     assert response.json() == {"detail": "Assessment not found."}
@@ -59,7 +59,7 @@ async def test_post_analysis_run_persists_run(client, db_session, seeded_assessm
 
     assert response.status_code == 200
     assert response.json()["status"] == "completed"
-    run = await db_session.get(QuestionAnalysisRun, response.json()["analysisRunId"])
+    run = await db_session.get(QuestionAnalysisRun, uuid.UUID(response.json()["analysisRunId"]))
     assert run is not None
     assert run.scoring_config_version == "inherent-risk-v1-percentage"
     assert run.triage_score == 2.0
@@ -97,7 +97,7 @@ async def test_post_executive_summary_persists_and_get_returns_saved_summary(
     )
 
     assert summary_response.status_code == 200
-    assert summary_response.json()["assessmentId"] == seeded_assessment["assessment_id"]
+    assert summary_response.json()["assessmentId"] == str(seeded_assessment["assessment_id"])
     assert summary_response.json()["executiveSummary"]["text"] == "Generated executive summary."
     assert summary_response.json()["executiveSummary"]["status"] == "generated"
     assert fake_client.calls == 1
@@ -117,7 +117,7 @@ async def test_get_endpoint_returns_controlled_not_assessed_response(client, see
 
     assert response.status_code == 200
     assert response.json() == {
-        "assessmentId": seeded_assessment["assessment_id"],
+        "assessmentId": str(seeded_assessment["assessment_id"]),
         "analysisRunId": None,
         "status": "completed_with_limitations",
         "inherentRisk": {
@@ -160,12 +160,11 @@ async def test_get_returns_latest_successful_run_when_failed_run_exists(client, 
 
     db_session.add(
         QuestionAnalysisRun(
-            id=str(uuid4()),
+            id=uuid.uuid4(),
             assessment_id=seeded_assessment["assessment_id"],
             status=AnalysisRunStatus.FAILED.value,
             scoring_config_version="inherent-risk-v1-percentage",
-            overall_risk_level=RiskLevel.NOT_ASSESSED.value,
-            source_text="Derived from SAR triage questions.",
+            inherent_risk_level=RiskLevel.NOT_ASSESSED.value,
         )
     )
     await db_session.commit()

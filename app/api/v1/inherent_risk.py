@@ -23,7 +23,7 @@ async def get_inherent_risk(
     session: AsyncSession = Depends(get_session),
     service: InherentRiskService = Depends(get_inherent_risk_service),
 ) -> InherentRiskResponseDTO:
-    return await service.get_inherent_risk_screen(session=session, assessment_id=str(assessment_id))
+    return await service.get_inherent_risk_screen(session=session, assessment_id=assessment_id)
 
 
 @router.post("/{assessment_id}/analysis-runs", response_model=AnalysisRunCreateResponseDTO)
@@ -35,7 +35,7 @@ async def create_analysis_run(
 ) -> AnalysisRunCreateResponseDTO:
     return await service.create_analysis_run(
         session=session,
-        assessment_id=str(assessment_id),
+        assessment_id=assessment_id,
         force=payload.force,
     )
 
@@ -52,6 +52,6 @@ async def generate_executive_summary(
 ) -> ExecutiveSummaryGenerateResponseDTO:
     return await service.generate(
         session=session,
-        assessment_id=str(assessment_id),
+        assessment_id=assessment_id,
         force=payload.force,
     )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+import uuid
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,7 +21,7 @@ class AnalysisRepository:
     async def get_latest_completed_snapshot(
         self,
         session: AsyncSession,
-        assessment_id: str,
+        assessment_id: uuid.UUID,
     ) -> StoredAnalysisSnapshot | None:
         run = (
             await session.execute(
@@ -57,21 +58,17 @@ class AnalysisRepository:
             status=AnalysisRunStatus(run.status),
             triage_score=run.triage_score,
             inherent_score=run.inherent_score,
-            overall_risk_level=RiskLevel(
-                run.inherent_risk_level or run.overall_risk_level or RiskLevel.NOT_ASSESSED.value
-            ),
+            inherent_risk_level=RiskLevel(run.inherent_risk_level or RiskLevel.NOT_ASSESSED.value),
             executive_summary_status=summary_status,
             executive_summary_text=run.executive_summary_text,
             executive_summary_model=run.executive_summary_model,
             executive_summary_prompt_version=run.executive_summary_prompt_version,
             executive_summary_input_hash=run.executive_summary_input_hash,
             executive_summary_generated_at=run.executive_summary_generated_at,
-            limitation_summary=run.limitation_summary,
-            failure_reason=run.failure_reason,
-            source_text=run.source_text,
+            error_summary=run.error_summary,
             question_results=[
                 ComputedQuestionRisk(
-                    question_code=result.question_definition_id,
+                    question_code=self._extract_question_code(result.input_snapshot),
                     response_id=result.response_id,
                     question_definition_id=result.question_definition_id,
                     selected_option_id=result.selected_option_id,
@@ -94,15 +91,13 @@ class AnalysisRepository:
     async def create_analysis_run(
         self,
         session: AsyncSession,
-        assessment_id: str,
+        assessment_id: uuid.UUID,
         status: AnalysisRunStatus,
         scoring_config_version: str,
         triage_score: float | None,
         inherent_score: float | None,
-        overall_risk_level: RiskLevel,
-        source_text: str,
-        limitation_summary: str | None = None,
-        failure_reason: str | None = None,
+        inherent_risk_level: RiskLevel,
+        error_summary: str | None = None,
     ) -> QuestionAnalysisRun:
         run = QuestionAnalysisRun(
             assessment_id=assessment_id,
@@ -110,11 +105,8 @@ class AnalysisRepository:
             scoring_config_version=scoring_config_version,
             triage_score=triage_score,
             inherent_score=inherent_score,
-            inherent_risk_level=overall_risk_level.value,
-            overall_risk_level=overall_risk_level.value,
-            source_text=source_text,
-            limitation_summary=limitation_summary,
-            failure_reason=failure_reason,
+            inherent_risk_level=inherent_risk_level.value,
+            error_summary=error_summary,
             created_at=datetime.now(timezone.utc),
         )
         session.add(run)
@@ -124,14 +116,14 @@ class AnalysisRepository:
     async def get_analysis_run(
         self,
         session: AsyncSession,
-        analysis_run_id: str,
+        analysis_run_id: uuid.UUID,
     ) -> QuestionAnalysisRun | None:
         return await session.get(QuestionAnalysisRun, analysis_run_id)
 
     async def update_executive_summary(
         self,
         session: AsyncSession,
-        analysis_run_id: str,
+        analysis_run_id: uuid.UUID,
         *,
         summary_text: str,
         summary_status: ExecutiveSummaryStatus,
@@ -152,11 +144,11 @@ class AnalysisRepository:
         run.executive_summary_generated_at = generated_at
         if summary_status == ExecutiveSummaryStatus.FALLBACK:
             run.status = AnalysisRunStatus.COMPLETED_WITH_LIMITATIONS.value
-            run.failure_reason = error_summary
+            run.error_summary = error_summary
         else:
-            if run.limitation_summary is None:
+            if run.status != AnalysisRunStatus.COMPLETED_WITH_LIMITATIONS.value:
                 run.status = AnalysisRunStatus.COMPLETED.value
-            run.failure_reason = None
+            run.error_summary = None
 
         await session.flush()
         return run
@@ -172,10 +164,21 @@ class AnalysisRepository:
         value = snapshot.get("selectedResponse")
         return value if isinstance(value, str) else ""
 
+    @staticmethod
+    def _extract_question_code(input_snapshot: str | None) -> str:
+        if not input_snapshot:
+            return ""
+        try:
+            snapshot = json.loads(input_snapshot)
+        except json.JSONDecodeError:
+            return ""
+        value = snapshot.get("questionCode")
+        return value if isinstance(value, str) else ""
+
     async def upsert_question_risk_results(
         self,
         session: AsyncSession,
-        analysis_run_id: str,
+        analysis_run_id: uuid.UUID,
         question_results: list[ComputedQuestionRisk],
     ) -> None:
         if not question_results:

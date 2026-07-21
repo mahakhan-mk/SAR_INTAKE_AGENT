@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime, timezone
+import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -43,7 +44,7 @@ class ExecutiveSummaryService:
     async def generate(
         self,
         session: AsyncSession,
-        assessment_id: str,
+        assessment_id: uuid.UUID,
         force: bool = False,
     ) -> ExecutiveSummaryGenerateResponseDTO:
         assessment = await self.assessment_repository.get_assessment(session, assessment_id)
@@ -139,7 +140,7 @@ class ExecutiveSummaryService:
             "technologyName": assessment.technology_name,
             "vendorName": getattr(assessment, "vendor_name", None),
             "productName": getattr(assessment, "product_name", None),
-            "inherentRiskLevel": snapshot.overall_risk_level.value,
+            "inherentRiskLevel": snapshot.inherent_risk_level.value,
             "highRiskQuestionCount": len(high_risk_results),
             "topRiskDrivers": top_risk_drivers,
             "materialQuestions": [
@@ -151,7 +152,7 @@ class ExecutiveSummaryService:
                 }
                 for result in material_questions
             ],
-            "materialLimitations": snapshot.limitation_summary,
+            "materialLimitations": self._derive_material_limitations(snapshot),
         }
 
     @staticmethod
@@ -177,13 +178,24 @@ class ExecutiveSummaryService:
             for result in snapshot.question_results
             if result.risk_level in {RiskLevel.HIGH, RiskLevel.CRITICAL}
         )
-        limitations_text = f" Limitations: {snapshot.limitation_summary}." if snapshot.limitation_summary else ""
+        material_limitations = self._derive_material_limitations(snapshot)
+        limitations_text = f" Limitations: {material_limitations}." if material_limitations else ""
 
         return (
-            f"{display_name} is currently assessed as {snapshot.overall_risk_level.label} inherent risk "
+            f"{display_name} is currently assessed as {snapshot.inherent_risk_level.label} inherent risk "
             f"based on SAR triage responses. {high_risk_count} high-risk triage responses were identified."
             f"{driver_sentence}{limitations_text}"
         )
+
+    @staticmethod
+    def _derive_material_limitations(snapshot: StoredAnalysisSnapshot) -> str | None:
+        if snapshot.status == AnalysisRunStatus.FAILED:
+            return snapshot.error_summary
+        if snapshot.status != AnalysisRunStatus.COMPLETED_WITH_LIMITATIONS:
+            return None
+        if not snapshot.question_results:
+            return "No answered triage responses were available for scoring."
+        return "Scoring completed with limitations based on available triage responses."
 
     def _derive_top_risk_drivers(self, snapshot: StoredAnalysisSnapshot) -> list[dict[str, str]]:
         grouped: dict[str, list] = {}
@@ -214,15 +226,15 @@ class ExecutiveSummaryService:
     @staticmethod
     def _build_response(
         *,
-        assessment_id: str,
-        analysis_run_id: str,
+        assessment_id: uuid.UUID,
+        analysis_run_id: uuid.UUID,
         text: str,
         status: ExecutiveSummaryStatus,
         generated_at: datetime,
     ) -> ExecutiveSummaryGenerateResponseDTO:
         return ExecutiveSummaryGenerateResponseDTO(
-            assessmentId=assessment_id,
-            analysisRunId=analysis_run_id,
+            assessmentId=str(assessment_id),
+            analysisRunId=str(analysis_run_id),
             executiveSummary=ExecutiveSummaryGenerateEnvelopeDTO(
                 text=text,
                 status=status,

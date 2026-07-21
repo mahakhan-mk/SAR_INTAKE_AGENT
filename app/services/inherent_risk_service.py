@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 from typing import Sequence
+import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,10 +22,8 @@ from app.models.enums import AnalysisRunStatus, ExecutiveSummaryStatus, RiskLeve
 from app.repositories.analysis_repository import AnalysisRepository
 from app.repositories.assessment_repository import AssessmentRepository
 
-SOURCE_TEXT = "Derived from SAR triage questions."
 NO_RESPONSES_LIMITATION = "No answered triage responses were available for scoring."
 MISSING_RESPONSES_LIMITATION = "One or more triage questions are unanswered; scoring used the available responses only."
-FALLBACK_LIMITATION = "One or more responses required answer_value label fallback because selected_option_id was unavailable."
 UNRESOLVED_LIMITATION = "One or more stored responses could not be resolved to a configured triage option."
 
 
@@ -41,7 +40,7 @@ class InherentRiskService:
         self.assembler = assembler
         self.scoring_policy = scoring_policy
 
-    async def get_inherent_risk_screen(self, session: AsyncSession, assessment_id: str):
+    async def get_inherent_risk_screen(self, session: AsyncSession, assessment_id: uuid.UUID):
         assessment = await self.assessment_repository.get_assessment(session, assessment_id)
         if assessment is None:
             raise AssessmentNotFoundError()
@@ -62,7 +61,7 @@ class InherentRiskService:
     async def create_analysis_run(
         self,
         session: AsyncSession,
-        assessment_id: str,
+        assessment_id: uuid.UUID,
         force: bool = False,
     ) -> AnalysisRunCreateResponseDTO:
         del force
@@ -84,13 +83,13 @@ class InherentRiskService:
             )
 
         return AnalysisRunCreateResponseDTO(
-            analysisRunId=snapshot.analysis_run_id,
+            analysisRunId=str(snapshot.analysis_run_id),
             status=snapshot.status,
         )
 
     def _build_state_from_snapshot(
         self,
-        assessment_id: str,
+        assessment_id: uuid.UUID,
         snapshot: StoredAnalysisSnapshot,
     ) -> InherentRiskScreenState:
         high_risk_count = sum(
@@ -102,16 +101,19 @@ class InherentRiskService:
             assessment_id=assessment_id,
             analysis_run_id=snapshot.analysis_run_id,
             status=snapshot.status,
-            inherent_risk_level=snapshot.overall_risk_level,
+            inherent_risk_level=snapshot.inherent_risk_level,
             high_risk_question_count=high_risk_count,
             top_risk_drivers=self._derive_top_risk_drivers(snapshot.question_results),
             executive_summary_status=snapshot.executive_summary_status,
             executive_summary_text=snapshot.executive_summary_text,
             executive_summary_generated_at=snapshot.executive_summary_generated_at,
-            source_text=snapshot.source_text,
         )
 
-    def _not_assessed_state(self, assessment_id: str, analysis_run_id: str | None) -> InherentRiskScreenState:
+    def _not_assessed_state(
+        self,
+        assessment_id: uuid.UUID,
+        analysis_run_id: uuid.UUID | None,
+    ) -> InherentRiskScreenState:
         return InherentRiskScreenState(
             assessment_id=assessment_id,
             analysis_run_id=analysis_run_id,
@@ -122,13 +124,12 @@ class InherentRiskService:
             executive_summary_status=ExecutiveSummaryStatus.NOT_GENERATED,
             executive_summary_text=None,
             executive_summary_generated_at=None,
-            source_text=SOURCE_TEXT,
         )
 
     async def _create_and_persist_analysis(
         self,
         session: AsyncSession,
-        assessment_id: str,
+        assessment_id: uuid.UUID,
         persist_empty_run: bool,
     ) -> StoredAnalysisSnapshot | None:
         triage_payload = await self.assessment_repository.load_active_triage_question_responses(
@@ -156,8 +157,6 @@ class InherentRiskService:
             if limitations or not question_results
             else AnalysisRunStatus.COMPLETED
         )
-        limitation_summary = " ".join(dict.fromkeys(limitations)) if limitations else None
-
         try:
             run = await self.analysis_repository.create_analysis_run(
                 session=session,
@@ -166,9 +165,7 @@ class InherentRiskService:
                 scoring_config_version=self.scoring_policy.version,
                 triage_score=triage_score,
                 inherent_score=inherent_score,
-                overall_risk_level=overall_level,
-                source_text=SOURCE_TEXT,
-                limitation_summary=limitation_summary,
+                inherent_risk_level=overall_level,
             )
             await self.analysis_repository.upsert_question_risk_results(session, run.id, question_results)
             await session.commit()
@@ -181,9 +178,8 @@ class InherentRiskService:
                 scoring_config_version=self.scoring_policy.version,
                 triage_score=None,
                 inherent_score=None,
-                overall_risk_level=RiskLevel.NOT_ASSESSED,
-                source_text=SOURCE_TEXT,
-                failure_reason=str(exc),
+                inherent_risk_level=RiskLevel.NOT_ASSESSED,
+                error_summary=str(exc),
             )
             await session.commit()
             return StoredAnalysisSnapshot(
@@ -191,16 +187,14 @@ class InherentRiskService:
                 status=AnalysisRunStatus.FAILED,
                 triage_score=None,
                 inherent_score=None,
-                overall_risk_level=RiskLevel.NOT_ASSESSED,
+                inherent_risk_level=RiskLevel.NOT_ASSESSED,
                 executive_summary_status=ExecutiveSummaryStatus.NOT_GENERATED,
                 executive_summary_text=None,
                 executive_summary_model=None,
                 executive_summary_prompt_version=None,
                 executive_summary_input_hash=None,
                 executive_summary_generated_at=None,
-                limitation_summary=None,
-                failure_reason=str(exc),
-                source_text=SOURCE_TEXT,
+                error_summary=str(exc),
                 question_results=[],
             )
 
@@ -209,16 +203,14 @@ class InherentRiskService:
             status=status,
             triage_score=triage_score,
             inherent_score=inherent_score,
-            overall_risk_level=overall_level,
+            inherent_risk_level=overall_level,
             executive_summary_status=ExecutiveSummaryStatus.NOT_GENERATED,
             executive_summary_text=None,
             executive_summary_model=None,
             executive_summary_prompt_version=None,
             executive_summary_input_hash=None,
             executive_summary_generated_at=None,
-            limitation_summary=limitation_summary,
-            failure_reason=None,
-            source_text=SOURCE_TEXT,
+            error_summary=None,
             question_results=question_results,
         )
 
@@ -235,7 +227,7 @@ class InherentRiskService:
             )
             input_snapshot = json.dumps(
                 {
-                    "questionCode": response.question_code,
+                    "questionCode": str(response.question_code),
                     "selectedResponse": response.selected_option_label,
                     "riskBand": response.risk_level.value,
                     "scoringRuleVersion": self.scoring_policy.version,
@@ -247,7 +239,7 @@ class InherentRiskService:
                     question_code=response.question_code,
                     response_id=response.response_id,
                     question_definition_id=response.question_id,
-                    selected_option_id=response.selected_option_id,
+                    selected_option_id=None,
                     selected_option_label=response.selected_option_label,
                     question_text=response.question_text,
                     risk_domain=response.risk_domain,
@@ -279,8 +271,6 @@ class InherentRiskService:
         )
         if triage_payload.required_triage_question_count > answered_required_question_count:
             limitations.append(MISSING_RESPONSES_LIMITATION)
-        if triage_payload.used_answer_value_resolution:
-            limitations.append(FALLBACK_LIMITATION)
         if triage_payload.unresolved_response_ids:
             limitations.append(UNRESOLVED_LIMITATION)
         return limitations
