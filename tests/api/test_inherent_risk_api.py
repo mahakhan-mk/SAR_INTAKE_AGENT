@@ -2,12 +2,17 @@ from __future__ import annotations
 
 from uuid import uuid4
 
+import pytest
+from sqlalchemy import select
+
 from app.api.dependencies import get_azure_executive_summary_client, get_executive_summary_prompt_loader
 from app.llm.executive_summary import ExecutiveSummaryPromptLoader
 from app.main import app
 from app.models.database import QuestionAnalysisRun
 from app.models.enums import AnalysisRunStatus, RiskLevel
 from tests.conftest import add_question_with_options, add_response
+
+pytestmark = pytest.mark.asyncio
 
 
 class FakeAzureSummaryClient:
@@ -21,22 +26,22 @@ class FakeAzureSummaryClient:
         return self.summary_text
 
 
-def test_get_endpoint_returns_404_for_missing_assessment(client):
-    response = client.get(f"/api/v1/assessments/{uuid4()}/inherent-risk")
+async def test_get_endpoint_returns_404_for_missing_assessment(client):
+    response = await client.get(f"/api/v1/assessments/{uuid4()}/inherent-risk")
 
     assert response.status_code == 404
     assert response.json() == {"detail": "Assessment not found."}
 
 
-def test_post_analysis_run_returns_404_for_missing_assessment(client):
-    response = client.post(f"/api/v1/assessments/{uuid4()}/analysis-runs", json={"force": False})
+async def test_post_analysis_run_returns_404_for_missing_assessment(client):
+    response = await client.post(f"/api/v1/assessments/{uuid4()}/analysis-runs", json={"force": False})
 
     assert response.status_code == 404
     assert response.json() == {"detail": "Assessment not found."}
 
 
-def test_post_analysis_run_persists_run(client, db_session, seeded_assessment):
-    question, options = add_question_with_options(
+async def test_post_analysis_run_persists_run(client, db_session, seeded_assessment):
+    question, options = await add_question_with_options(
         db_session,
         seeded_assessment["questionnaire_version_id"],
         risk_domain="Business Continuity",
@@ -45,16 +50,16 @@ def test_post_analysis_run_persists_run(client, db_session, seeded_assessment):
             ("Maximum", RiskLevel.CRITICAL, 4.0, "Maximum continuity signal."),
         ],
     )
-    add_response(db_session, seeded_assessment["assessment_id"], question, options[0])
+    await add_response(db_session, seeded_assessment["assessment_id"], question, options[0])
 
-    response = client.post(
+    response = await client.post(
         f"/api/v1/assessments/{seeded_assessment['assessment_id']}/analysis-runs",
         json={"force": False},
     )
 
     assert response.status_code == 200
     assert response.json()["status"] == "completed"
-    run = db_session.get(QuestionAnalysisRun, response.json()["analysisRunId"])
+    run = await db_session.get(QuestionAnalysisRun, response.json()["analysisRunId"])
     assert run is not None
     assert run.scoring_config_version == "inherent-risk-v1-percentage"
     assert run.triage_score == 2.0
@@ -62,7 +67,7 @@ def test_post_analysis_run_persists_run(client, db_session, seeded_assessment):
     assert run.inherent_risk_level == "high"
 
 
-def test_post_executive_summary_persists_and_get_returns_saved_summary(
+async def test_post_executive_summary_persists_and_get_returns_saved_summary(
     client,
     db_session,
     seeded_assessment,
@@ -74,7 +79,7 @@ def test_post_executive_summary_persists_and_get_returns_saved_summary(
     )
     app.dependency_overrides[get_azure_executive_summary_client] = lambda: fake_client
 
-    question, options = add_question_with_options(
+    question, options = await add_question_with_options(
         db_session,
         seeded_assessment["questionnaire_version_id"],
         risk_domain="Business Continuity",
@@ -84,9 +89,9 @@ def test_post_executive_summary_persists_and_get_returns_saved_summary(
             ("Maximum", RiskLevel.CRITICAL, 4.0, "Maximum continuity signal"),
         ],
     )
-    add_response(db_session, seeded_assessment["assessment_id"], question, options[0])
+    await add_response(db_session, seeded_assessment["assessment_id"], question, options[0])
 
-    summary_response = client.post(
+    summary_response = await client.post(
         f"/api/v1/assessments/{seeded_assessment['assessment_id']}/inherent-risk/executive-summary",
         json={"force": False},
     )
@@ -97,7 +102,7 @@ def test_post_executive_summary_persists_and_get_returns_saved_summary(
     assert summary_response.json()["executiveSummary"]["status"] == "generated"
     assert fake_client.calls == 1
 
-    get_response = client.get(f"/api/v1/assessments/{seeded_assessment['assessment_id']}/inherent-risk")
+    get_response = await client.get(f"/api/v1/assessments/{seeded_assessment['assessment_id']}/inherent-risk")
 
     assert get_response.status_code == 200
     assert get_response.json()["executiveSummary"]["text"] == "Generated executive summary."
@@ -107,8 +112,8 @@ def test_post_executive_summary_persists_and_get_returns_saved_summary(
     app.dependency_overrides.pop(get_azure_executive_summary_client, None)
 
 
-def test_get_endpoint_returns_controlled_not_assessed_response(client, seeded_assessment):
-    response = client.get(f"/api/v1/assessments/{seeded_assessment['assessment_id']}/inherent-risk")
+async def test_get_endpoint_returns_controlled_not_assessed_response(client, seeded_assessment):
+    response = await client.get(f"/api/v1/assessments/{seeded_assessment['assessment_id']}/inherent-risk")
 
     assert response.status_code == 200
     assert response.json() == {
@@ -134,8 +139,8 @@ def test_get_endpoint_returns_controlled_not_assessed_response(client, seeded_as
     }
 
 
-def test_get_returns_latest_successful_run_when_failed_run_exists(client, db_session, seeded_assessment):
-    question, options = add_question_with_options(
+async def test_get_returns_latest_successful_run_when_failed_run_exists(client, db_session, seeded_assessment):
+    question, options = await add_question_with_options(
         db_session,
         seeded_assessment["questionnaire_version_id"],
         risk_domain="Security",
@@ -144,11 +149,13 @@ def test_get_returns_latest_successful_run_when_failed_run_exists(client, db_ses
             ("Maximum", RiskLevel.CRITICAL, 4.0, "Maximum security signal."),
         ],
     )
-    add_response(db_session, seeded_assessment["assessment_id"], question, options[0])
+    await add_response(db_session, seeded_assessment["assessment_id"], question, options[0])
 
-    created = client.post(
+    created = (
+        await client.post(
         f"/api/v1/assessments/{seeded_assessment['assessment_id']}/analysis-runs",
         json={"force": False},
+        )
     ).json()
 
     db_session.add(
@@ -161,9 +168,9 @@ def test_get_returns_latest_successful_run_when_failed_run_exists(client, db_ses
             source_text="Derived from SAR triage questions.",
         )
     )
-    db_session.commit()
+    await db_session.commit()
 
-    response = client.get(f"/api/v1/assessments/{seeded_assessment['assessment_id']}/inherent-risk")
+    response = await client.get(f"/api/v1/assessments/{seeded_assessment['assessment_id']}/inherent-risk")
 
     assert response.status_code == 200
     assert response.json()["analysisRunId"] == created["analysisRunId"]

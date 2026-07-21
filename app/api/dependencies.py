@@ -1,5 +1,5 @@
 from fastapi import Depends
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.assemblers.inherent_risk_assembler import InherentRiskAssembler
 from app.config import DEFAULT_INHERENT_RISK_SCORING_POLICY, InherentRiskScoringPolicy
@@ -12,7 +12,7 @@ from app.services.executive_summary_service import ExecutiveSummaryService
 from app.services.inherent_risk_service import InherentRiskService
 
 
-def get_session(db: Session = Depends(get_db)) -> Session:
+def get_session(db: AsyncSession = Depends(get_db)) -> AsyncSession:
     return db
 
 

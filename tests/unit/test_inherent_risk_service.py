@@ -4,6 +4,7 @@ import builtins
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import select
 
 from app.api.errors import AssessmentNotFoundError
 from app.assemblers.inherent_risk_assembler import InherentRiskAssembler
@@ -14,6 +15,8 @@ from app.repositories.analysis_repository import AnalysisRepository
 from app.repositories.assessment_repository import AssessmentRepository
 from app.services.inherent_risk_service import InherentRiskService
 from tests.conftest import add_question_with_option, add_question_with_options, add_response
+
+pytestmark = pytest.mark.asyncio
 
 
 def build_service() -> InherentRiskService:
@@ -26,7 +29,7 @@ def build_service() -> InherentRiskService:
 
 
 def seed_boundary_question(db_session, seeded_assessment, selected_weight: float, selected_level: RiskLevel):
-    question, options = add_question_with_options(
+    return add_question_with_options(
         db_session,
         seeded_assessment["questionnaire_version_id"],
         risk_domain="Boundary",
@@ -35,17 +38,16 @@ def seed_boundary_question(db_session, seeded_assessment, selected_weight: float
             ("Maximum", RiskLevel.CRITICAL, 4.0, "Maximum risk signal."),
         ],
     )
-    add_response(db_session, seeded_assessment["assessment_id"], question, options[0])
 
 
-def test_database_schema_is_applied(monkeypatch):
+async def test_database_schema_is_applied(monkeypatch):
     captured: dict[str, object] = {}
 
     def fake_create_engine(*args, **kwargs):
         captured["execution_options"] = kwargs.get("execution_options")
         return object()
 
-    monkeypatch.setattr("app.database.create_engine", fake_create_engine)
+    monkeypatch.setattr("app.database.create_async_engine", fake_create_engine)
 
     from app.database import create_engine_from_url
 
@@ -55,17 +57,17 @@ def test_database_schema_is_applied(monkeypatch):
     assert execution_options["schema_translate_map"][DATABASE_SCHEMA_TOKEN] == "custom_schema"
 
 
-def test_assessment_not_found(db_session):
+async def test_assessment_not_found(db_session):
     service = build_service()
 
     with pytest.raises(AssessmentNotFoundError):
-        service.get_inherent_risk_screen(db_session, str(uuid4()))
+        await service.get_inherent_risk_screen(db_session, str(uuid4()))
 
 
-def test_assessment_with_no_responses_returns_not_assessed(db_session, seeded_assessment):
+async def test_assessment_with_no_responses_returns_not_assessed(db_session, seeded_assessment):
     service = build_service()
 
-    dto = service.get_inherent_risk_screen(db_session, seeded_assessment["assessment_id"])
+    dto = await service.get_inherent_risk_screen(db_session, seeded_assessment["assessment_id"])
 
     assert dto.analysisRunId is None
     assert dto.status == AnalysisRunStatus.COMPLETED_WITH_LIMITATIONS
@@ -81,18 +83,19 @@ def test_assessment_with_no_responses_returns_not_assessed(db_session, seeded_as
         (3.0, RiskLevel.CRITICAL, RiskLevel.CRITICAL),
     ],
 )
-def test_percentage_scoring_exact_boundaries(
+async def test_percentage_scoring_exact_boundaries(
     db_session,
     seeded_assessment,
     selected_weight,
     selected_level,
     expected_level,
 ):
-    seed_boundary_question(db_session, seeded_assessment, selected_weight, selected_level)
+    question, options = await seed_boundary_question(db_session, seeded_assessment, selected_weight, selected_level)
+    await add_response(db_session, seeded_assessment["assessment_id"], question, options[0])
     service = build_service()
 
-    dto = service.get_inherent_risk_screen(db_session, seeded_assessment["assessment_id"])
-    snapshot = AnalysisRepository().get_latest_completed_snapshot(db_session, seeded_assessment["assessment_id"])
+    dto = await service.get_inherent_risk_screen(db_session, seeded_assessment["assessment_id"])
+    snapshot = await AnalysisRepository().get_latest_completed_snapshot(db_session, seeded_assessment["assessment_id"])
 
     assert dto.status == AnalysisRunStatus.COMPLETED
     assert dto.inherentRisk.level == expected_level
@@ -101,8 +104,8 @@ def test_percentage_scoring_exact_boundaries(
     assert snapshot.triage_score == selected_weight
 
 
-def test_optional_unanswered_questions_do_not_create_limitations(db_session, seeded_assessment):
-    answered_question, answered_options = add_question_with_options(
+async def test_optional_unanswered_questions_do_not_create_limitations(db_session, seeded_assessment):
+    answered_question, answered_options = await add_question_with_options(
         db_session,
         seeded_assessment["questionnaire_version_id"],
         risk_domain="Security",
@@ -112,7 +115,7 @@ def test_optional_unanswered_questions_do_not_create_limitations(db_session, see
             ("Maximum", RiskLevel.CRITICAL, 4.0, "Maximum security signal."),
         ],
     )
-    add_question_with_options(
+    await add_question_with_options(
         db_session,
         seeded_assessment["questionnaire_version_id"],
         risk_domain="Privacy",
@@ -122,19 +125,19 @@ def test_optional_unanswered_questions_do_not_create_limitations(db_session, see
             ("Maximum", RiskLevel.CRITICAL, 4.0, "Maximum privacy signal."),
         ],
     )
-    add_response(db_session, seeded_assessment["assessment_id"], answered_question, answered_options[0])
+    await add_response(db_session, seeded_assessment["assessment_id"], answered_question, answered_options[0])
 
     service = build_service()
-    run_dto = service.create_analysis_run(db_session, seeded_assessment["assessment_id"])
-    run = db_session.get(QuestionAnalysisRun, run_dto.analysisRunId)
+    run_dto = await service.create_analysis_run(db_session, seeded_assessment["assessment_id"])
+    run = await db_session.get(QuestionAnalysisRun, run_dto.analysisRunId)
 
     assert run_dto.status == AnalysisRunStatus.COMPLETED
     assert run is not None
     assert run.limitation_summary is None
 
 
-def test_required_unanswered_questions_do_create_limitations(db_session, seeded_assessment):
-    answered_question, answered_options = add_question_with_options(
+async def test_required_unanswered_questions_do_create_limitations(db_session, seeded_assessment):
+    answered_question, answered_options = await add_question_with_options(
         db_session,
         seeded_assessment["questionnaire_version_id"],
         risk_domain="Security",
@@ -144,7 +147,7 @@ def test_required_unanswered_questions_do_create_limitations(db_session, seeded_
             ("Maximum", RiskLevel.CRITICAL, 4.0, "Maximum security signal."),
         ],
     )
-    add_question_with_options(
+    await add_question_with_options(
         db_session,
         seeded_assessment["questionnaire_version_id"],
         risk_domain="Privacy",
@@ -154,40 +157,40 @@ def test_required_unanswered_questions_do_create_limitations(db_session, seeded_
             ("Maximum", RiskLevel.CRITICAL, 4.0, "Maximum privacy signal."),
         ],
     )
-    add_response(db_session, seeded_assessment["assessment_id"], answered_question, answered_options[0])
+    await add_response(db_session, seeded_assessment["assessment_id"], answered_question, answered_options[0])
 
     service = build_service()
-    run_dto = service.create_analysis_run(db_session, seeded_assessment["assessment_id"])
-    run = db_session.get(QuestionAnalysisRun, run_dto.analysisRunId)
+    run_dto = await service.create_analysis_run(db_session, seeded_assessment["assessment_id"])
+    run = await db_session.get(QuestionAnalysisRun, run_dto.analysisRunId)
 
     assert run_dto.status == AnalysisRunStatus.COMPLETED_WITH_LIMITATIONS
     assert run is not None
     assert "unanswered" in (run.limitation_summary or "")
 
 
-def test_high_risk_question_count_counts_high_and_critical_only(db_session, seeded_assessment):
+async def test_high_risk_question_count_counts_high_and_critical_only(db_session, seeded_assessment):
     items = [
         ("Business Continuity", RiskLevel.HIGH, 3.0),
         ("Security", RiskLevel.CRITICAL, 4.0),
         ("Privacy", RiskLevel.MEDIUM, 2.0),
     ]
     for domain, level, weight in items:
-        question, option = add_question_with_option(
+        question, option = await add_question_with_option(
             db_session,
             seeded_assessment["questionnaire_version_id"],
             risk_domain=domain,
             risk_level=level,
             risk_weight=weight,
         )
-        add_response(db_session, seeded_assessment["assessment_id"], question, option)
+        await add_response(db_session, seeded_assessment["assessment_id"], question, option)
 
     service = build_service()
-    dto = service.get_inherent_risk_screen(db_session, seeded_assessment["assessment_id"])
+    dto = await service.get_inherent_risk_screen(db_session, seeded_assessment["assessment_id"])
 
     assert dto.inherentRisk.highRiskQuestionCount == 2
 
 
-def test_top_risk_drivers_are_limited_and_deterministic(db_session, seeded_assessment):
+async def test_top_risk_drivers_are_limited_and_deterministic(db_session, seeded_assessment):
     items = [
         ("Operations", RiskLevel.HIGH, 3.0),
         ("Business Continuity", RiskLevel.CRITICAL, 4.0),
@@ -196,17 +199,17 @@ def test_top_risk_drivers_are_limited_and_deterministic(db_session, seeded_asses
         ("Vendor Reputation", RiskLevel.CRITICAL, 4.0),
     ]
     for domain, level, weight in items:
-        question, option = add_question_with_option(
+        question, option = await add_question_with_option(
             db_session,
             seeded_assessment["questionnaire_version_id"],
             risk_domain=domain,
             risk_level=level,
             risk_weight=weight,
         )
-        add_response(db_session, seeded_assessment["assessment_id"], question, option)
+        await add_response(db_session, seeded_assessment["assessment_id"], question, option)
 
     service = build_service()
-    dto = service.get_inherent_risk_screen(db_session, seeded_assessment["assessment_id"])
+    dto = await service.get_inherent_risk_screen(db_session, seeded_assessment["assessment_id"])
 
     assert [driver.model_dump() for driver in dto.topRiskDrivers] == [
         {"domain": "Business Continuity", "level": RiskLevel.CRITICAL},
@@ -215,8 +218,8 @@ def test_top_risk_drivers_are_limited_and_deterministic(db_session, seeded_asses
     ]
 
 
-def test_selected_option_id_path_sets_full_confidence(db_session, seeded_assessment):
-    question, options = add_question_with_options(
+async def test_selected_option_id_path_sets_full_confidence(db_session, seeded_assessment):
+    question, options = await add_question_with_options(
         db_session,
         seeded_assessment["questionnaire_version_id"],
         risk_domain="Security",
@@ -225,17 +228,21 @@ def test_selected_option_id_path_sets_full_confidence(db_session, seeded_assessm
             ("Maximum", RiskLevel.CRITICAL, 4.0, "Maximum security signal."),
         ],
     )
-    add_response(db_session, seeded_assessment["assessment_id"], question, options[0])
+    await add_response(db_session, seeded_assessment["assessment_id"], question, options[0])
 
     service = build_service()
-    run_dto = service.create_analysis_run(db_session, seeded_assessment["assessment_id"])
-    stored_result = db_session.query(QuestionRiskResult).filter_by(analysis_run_id=run_dto.analysisRunId).one()
+    run_dto = await service.create_analysis_run(db_session, seeded_assessment["assessment_id"])
+    stored_result = (
+        await db_session.execute(
+            select(QuestionRiskResult).where(QuestionRiskResult.analysis_run_id == run_dto.analysisRunId)
+        )
+    ).scalars().one()
 
     assert stored_result.ai_confidence == 1.0
 
 
-def test_answer_value_fallback_path_sets_lower_confidence(db_session, seeded_assessment):
-    question, options = add_question_with_options(
+async def test_answer_value_fallback_path_sets_lower_confidence(db_session, seeded_assessment):
+    question, options = await add_question_with_options(
         db_session,
         seeded_assessment["questionnaire_version_id"],
         risk_domain="Security",
@@ -244,7 +251,7 @@ def test_answer_value_fallback_path_sets_lower_confidence(db_session, seeded_ass
             ("Maximum", RiskLevel.CRITICAL, 4.0, "Maximum security signal."),
         ],
     )
-    add_response(
+    await add_response(
         db_session,
         seeded_assessment["assessment_id"],
         question,
@@ -253,15 +260,19 @@ def test_answer_value_fallback_path_sets_lower_confidence(db_session, seeded_ass
     )
 
     service = build_service()
-    run_dto = service.create_analysis_run(db_session, seeded_assessment["assessment_id"])
-    stored_result = db_session.query(QuestionRiskResult).filter_by(analysis_run_id=run_dto.analysisRunId).one()
+    run_dto = await service.create_analysis_run(db_session, seeded_assessment["assessment_id"])
+    stored_result = (
+        await db_session.execute(
+            select(QuestionRiskResult).where(QuestionRiskResult.analysis_run_id == run_dto.analysisRunId)
+        )
+    ).scalars().one()
 
     assert run_dto.status == AnalysisRunStatus.COMPLETED_WITH_LIMITATIONS
     assert stored_result.ai_confidence == 0.8
 
 
-def test_db_configuration_fields_are_read_and_explanation_uses_db_values(db_session, seeded_assessment):
-    question, options = add_question_with_options(
+async def test_db_configuration_fields_are_read_and_explanation_uses_db_values(db_session, seeded_assessment):
+    question, options = await add_question_with_options(
         db_session,
         seeded_assessment["questionnaire_version_id"],
         risk_domain="Security",
@@ -271,11 +282,15 @@ def test_db_configuration_fields_are_read_and_explanation_uses_db_values(db_sess
             ("Maximum", RiskLevel.CRITICAL, 4.0, "Maximum security signal."),
         ],
     )
-    add_response(db_session, seeded_assessment["assessment_id"], question, options[0])
+    await add_response(db_session, seeded_assessment["assessment_id"], question, options[0])
     service = build_service()
 
-    run_dto = service.create_analysis_run(db_session, seeded_assessment["assessment_id"])
-    stored_result = db_session.query(QuestionRiskResult).filter_by(analysis_run_id=run_dto.analysisRunId).one()
+    run_dto = await service.create_analysis_run(db_session, seeded_assessment["assessment_id"])
+    stored_result = (
+        await db_session.execute(
+            select(QuestionRiskResult).where(QuestionRiskResult.analysis_run_id == run_dto.analysisRunId)
+        )
+    ).scalars().one()
 
     assert stored_result.why_it_matters == "Stored why-it-matters text."
     assert stored_result.risk_signal == "Stored risk signal text."
@@ -283,18 +298,18 @@ def test_db_configuration_fields_are_read_and_explanation_uses_db_values(db_sess
     assert "Stored risk signal text." in (stored_result.ai_explanation or "")
 
 
-def test_existing_completed_run_is_returned_correctly(db_session, seeded_completed_run):
+async def test_existing_completed_run_is_returned_correctly(db_session, seeded_completed_run):
     service = build_service()
 
-    dto = service.get_inherent_risk_screen(db_session, seeded_completed_run["assessment_id"])
+    dto = await service.get_inherent_risk_screen(db_session, seeded_completed_run["assessment_id"])
 
     assert dto.analysisRunId == seeded_completed_run["run_id"]
     assert dto.executiveSummary.text == "Stored summary."
     assert dto.executiveSummary.status == ExecutiveSummaryStatus.GENERATED
 
 
-def test_previous_runs_remain_unchanged_and_latest_successful_run_is_selected(db_session, seeded_assessment):
-    question, options = add_question_with_options(
+async def test_previous_runs_remain_unchanged_and_latest_successful_run_is_selected(db_session, seeded_assessment):
+    question, options = await add_question_with_options(
         db_session,
         seeded_assessment["questionnaire_version_id"],
         risk_domain="Security",
@@ -303,15 +318,15 @@ def test_previous_runs_remain_unchanged_and_latest_successful_run_is_selected(db
             ("Maximum", RiskLevel.CRITICAL, 4.0, "Maximum security signal."),
         ],
     )
-    add_response(db_session, seeded_assessment["assessment_id"], question, options[0])
+    await add_response(db_session, seeded_assessment["assessment_id"], question, options[0])
     service = build_service()
 
-    first_run = service.create_analysis_run(db_session, seeded_assessment["assessment_id"])
-    first_row = db_session.get(QuestionAnalysisRun, first_run.analysisRunId)
+    first_run = await service.create_analysis_run(db_session, seeded_assessment["assessment_id"])
+    first_row = await db_session.get(QuestionAnalysisRun, first_run.analysisRunId)
     assert first_row is not None
     first_score = first_row.inherent_score
 
-    question_two, options_two = add_question_with_options(
+    question_two, options_two = await add_question_with_options(
         db_session,
         seeded_assessment["questionnaire_version_id"],
         risk_domain="Business Continuity",
@@ -320,20 +335,26 @@ def test_previous_runs_remain_unchanged_and_latest_successful_run_is_selected(db
             ("Maximum", RiskLevel.CRITICAL, 4.0, "Critical continuity signal."),
         ],
     )
-    add_response(db_session, seeded_assessment["assessment_id"], question_two, options_two[0])
+    await add_response(db_session, seeded_assessment["assessment_id"], question_two, options_two[0])
 
-    second_run = service.create_analysis_run(db_session, seeded_assessment["assessment_id"])
-    run_rows = db_session.query(QuestionAnalysisRun).filter_by(assessment_id=seeded_assessment["assessment_id"]).all()
+    second_run = await service.create_analysis_run(db_session, seeded_assessment["assessment_id"])
+    run_rows = (
+        await db_session.execute(
+            select(QuestionAnalysisRun).where(
+                QuestionAnalysisRun.assessment_id == seeded_assessment["assessment_id"]
+            )
+        )
+    ).scalars().all()
 
     assert len(run_rows) == 2
-    assert db_session.get(QuestionAnalysisRun, first_run.analysisRunId).inherent_score == first_score
+    assert (await db_session.get(QuestionAnalysisRun, first_run.analysisRunId)).inherent_score == first_score
 
-    dto = service.get_inherent_risk_screen(db_session, seeded_assessment["assessment_id"])
+    dto = await service.get_inherent_risk_screen(db_session, seeded_assessment["assessment_id"])
     assert dto.analysisRunId == second_run.analysisRunId
     assert dto.inherentRisk.level == RiskLevel.HIGH
 
 
-def test_failed_run_is_not_selected_as_latest_completed_run(db_session, seeded_completed_run):
+async def test_failed_run_is_not_selected_as_latest_completed_run(db_session, seeded_completed_run):
     db_session.add(
         QuestionAnalysisRun(
             id=str(uuid4()),
@@ -344,17 +365,17 @@ def test_failed_run_is_not_selected_as_latest_completed_run(db_session, seeded_c
             source_text="Derived from SAR triage questions.",
         )
     )
-    db_session.commit()
+    await db_session.commit()
 
     service = build_service()
-    dto = service.get_inherent_risk_screen(db_session, seeded_completed_run["assessment_id"])
+    dto = await service.get_inherent_risk_screen(db_session, seeded_completed_run["assessment_id"])
 
     assert dto.analysisRunId == seeded_completed_run["run_id"]
     assert dto.status == AnalysisRunStatus.COMPLETED
 
 
-def test_no_llm_client_is_called(db_session, seeded_assessment, monkeypatch):
-    question, options = add_question_with_options(
+async def test_no_llm_client_is_called(db_session, seeded_assessment, monkeypatch):
+    question, options = await add_question_with_options(
         db_session,
         seeded_assessment["questionnaire_version_id"],
         risk_domain="Security",
@@ -363,7 +384,7 @@ def test_no_llm_client_is_called(db_session, seeded_assessment, monkeypatch):
             ("Maximum", RiskLevel.CRITICAL, 4.0, "Maximum security signal."),
         ],
     )
-    add_response(db_session, seeded_assessment["assessment_id"], question, options[0])
+    await add_response(db_session, seeded_assessment["assessment_id"], question, options[0])
     service = build_service()
 
     original_import = builtins.__import__
@@ -374,4 +395,4 @@ def test_no_llm_client_is_called(db_session, seeded_assessment, monkeypatch):
         return original_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", guarded_import)
-    service.create_analysis_run(db_session, seeded_assessment["assessment_id"])
+    await service.create_analysis_run(db_session, seeded_assessment["assessment_id"])

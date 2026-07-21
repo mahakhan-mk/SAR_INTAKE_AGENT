@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import json
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.database import QuestionAnalysisRun, QuestionRiskResult
 from app.models.dto import ComputedQuestionRisk, StoredAnalysisSnapshot
@@ -17,27 +17,31 @@ SUCCESSFUL_RUN_STATUSES = (
 
 
 class AnalysisRepository:
-    def get_latest_completed_snapshot(
+    async def get_latest_completed_snapshot(
         self,
-        session: Session,
+        session: AsyncSession,
         assessment_id: str,
     ) -> StoredAnalysisSnapshot | None:
-        run = session.execute(
+        run = (
+            await session.execute(
             select(QuestionAnalysisRun)
             .where(
                 QuestionAnalysisRun.assessment_id == assessment_id,
                 QuestionAnalysisRun.status.in_(SUCCESSFUL_RUN_STATUSES),
             )
             .order_by(QuestionAnalysisRun.created_at.desc(), QuestionAnalysisRun.id.desc())
+            )
         ).scalars().first()
 
         if run is None:
             return None
 
-        results = session.execute(
+        results = (
+            await session.execute(
             select(QuestionRiskResult)
             .where(QuestionRiskResult.analysis_run_id == run.id)
             .order_by(QuestionRiskResult.created_at.asc(), QuestionRiskResult.id.asc())
+            )
         ).scalars().all()
 
         summary_status = ExecutiveSummaryStatus.NOT_GENERATED
@@ -87,9 +91,9 @@ class AnalysisRepository:
             ],
         )
 
-    def create_analysis_run(
+    async def create_analysis_run(
         self,
-        session: Session,
+        session: AsyncSession,
         assessment_id: str,
         status: AnalysisRunStatus,
         scoring_config_version: str,
@@ -114,15 +118,19 @@ class AnalysisRepository:
             created_at=datetime.now(timezone.utc),
         )
         session.add(run)
-        session.flush()
+        await session.flush()
         return run
 
-    def get_analysis_run(self, session: Session, analysis_run_id: str) -> QuestionAnalysisRun | None:
-        return session.get(QuestionAnalysisRun, analysis_run_id)
-
-    def update_executive_summary(
+    async def get_analysis_run(
         self,
-        session: Session,
+        session: AsyncSession,
+        analysis_run_id: str,
+    ) -> QuestionAnalysisRun | None:
+        return await session.get(QuestionAnalysisRun, analysis_run_id)
+
+    async def update_executive_summary(
+        self,
+        session: AsyncSession,
         analysis_run_id: str,
         *,
         summary_text: str,
@@ -133,7 +141,7 @@ class AnalysisRepository:
         generated_at: datetime,
         error_summary: str | None,
     ) -> QuestionAnalysisRun:
-        run = self.get_analysis_run(session, analysis_run_id)
+        run = await self.get_analysis_run(session, analysis_run_id)
         if run is None:
             raise LookupError(f"Analysis run {analysis_run_id} was not found.")
 
@@ -150,7 +158,7 @@ class AnalysisRepository:
                 run.status = AnalysisRunStatus.COMPLETED.value
             run.failure_reason = None
 
-        session.flush()
+        await session.flush()
         return run
 
     @staticmethod
@@ -164,9 +172,9 @@ class AnalysisRepository:
         value = snapshot.get("selectedResponse")
         return value if isinstance(value, str) else ""
 
-    def upsert_question_risk_results(
+    async def upsert_question_risk_results(
         self,
-        session: Session,
+        session: AsyncSession,
         analysis_run_id: str,
         question_results: list[ComputedQuestionRisk],
     ) -> None:
@@ -174,10 +182,12 @@ class AnalysisRepository:
             return
 
         response_ids = [result.response_id for result in question_results]
-        existing_results = session.execute(
+        existing_results = (
+            await session.execute(
             select(QuestionRiskResult).where(
                 QuestionRiskResult.analysis_run_id == analysis_run_id,
                 QuestionRiskResult.response_id.in_(response_ids),
+            )
             )
         ).scalars().all()
         existing_by_response_id = {result.response_id: result for result in existing_results}
@@ -216,4 +226,4 @@ class AnalysisRepository:
             existing.ai_confidence = result.confidence
             existing.input_snapshot = result.input_snapshot
 
-        session.flush()
+        await session.flush()
