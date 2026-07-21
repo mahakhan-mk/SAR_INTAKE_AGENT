@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,13 +21,13 @@ class AnalysisRepository:
     async def get_latest_completed_snapshot(
         self,
         session: AsyncSession,
-        assessment_id: str,
+        assessment_id: UUID | str,
     ) -> StoredAnalysisSnapshot | None:
         run = (
             await session.execute(
             select(QuestionAnalysisRun)
             .where(
-                QuestionAnalysisRun.assessment_id == assessment_id,
+                QuestionAnalysisRun.assessment_id == self._coerce_uuid(assessment_id),
                 QuestionAnalysisRun.status.in_(SUCCESSFUL_RUN_STATUSES),
             )
             .order_by(QuestionAnalysisRun.created_at.desc(), QuestionAnalysisRun.id.desc())
@@ -94,7 +95,7 @@ class AnalysisRepository:
     async def create_analysis_run(
         self,
         session: AsyncSession,
-        assessment_id: str,
+        assessment_id: UUID | str,
         status: AnalysisRunStatus,
         scoring_config_version: str,
         triage_score: float | None,
@@ -105,7 +106,7 @@ class AnalysisRepository:
         failure_reason: str | None = None,
     ) -> QuestionAnalysisRun:
         run = QuestionAnalysisRun(
-            assessment_id=assessment_id,
+            assessment_id=self._coerce_uuid(assessment_id),
             status=status.value,
             scoring_config_version=scoring_config_version,
             triage_score=triage_score,
@@ -124,14 +125,14 @@ class AnalysisRepository:
     async def get_analysis_run(
         self,
         session: AsyncSession,
-        analysis_run_id: str,
+        analysis_run_id: UUID | str,
     ) -> QuestionAnalysisRun | None:
-        return await session.get(QuestionAnalysisRun, analysis_run_id)
+        return await session.get(QuestionAnalysisRun, self._coerce_uuid(analysis_run_id))
 
     async def update_executive_summary(
         self,
         session: AsyncSession,
-        analysis_run_id: str,
+        analysis_run_id: UUID | str,
         *,
         summary_text: str,
         summary_status: ExecutiveSummaryStatus,
@@ -160,6 +161,10 @@ class AnalysisRepository:
 
         await session.flush()
         return run
+
+    @staticmethod
+    def _coerce_uuid(value: UUID | str) -> UUID:
+        return value if isinstance(value, UUID) else UUID(value)
 
     @staticmethod
     def _extract_selected_response(input_snapshot: str | None) -> str:

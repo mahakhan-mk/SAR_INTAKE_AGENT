@@ -23,7 +23,7 @@ SECTION_TITLES: dict[str, str] = {
 class IntakeAssembler:
     def to_dto(self, record: IntakeOverviewRecord) -> IntakeOverviewResponseDTO:
         return IntakeOverviewResponseDTO(
-            assessmentId=record.assessment_id,
+            assessmentId=str(record.assessment_id),
             header=IntakeHeaderDTO(
                 technologyName=record.header.technology_name,
                 sourceSystem=record.header.source_system,
@@ -35,7 +35,7 @@ class IntakeAssembler:
                     title=self._section_title(section.code),
                     questions=[
                         IntakeQuestionDTO(
-                            questionId=question.question_id,
+                            questionId=str(question.question_id),
                             questionCode=question.question_code,
                             label=question.label,
                             answer=question.answer,
@@ -50,7 +50,7 @@ class IntakeAssembler:
             ],
             triage=[
                 IntakeTriageQuestionDTO(
-                    questionId=question.question_id,
+                    questionId=str(question.question_id),
                     questionCode=question.question_code,
                     label=question.label,
                     answer=question.answer,

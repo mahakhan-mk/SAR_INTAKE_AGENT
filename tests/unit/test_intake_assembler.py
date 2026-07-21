@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from uuid import UUID
+
 import pytest
 
 from app.assemblers.intake_assembler import IntakeAssembler
@@ -19,7 +21,7 @@ def build_record(
     triage: list[IntakeTriageQuestionRecord] | None = None,
 ) -> IntakeOverviewRecord:
     return IntakeOverviewRecord(
-        assessment_id="assessment-1",
+        assessment_id=UUID("00000000-0000-0000-0000-000000000100"),
         header=IntakeHeaderRecord(
             technology_name="Microsoft 365 Copilot",
             source_system=source_system,
@@ -66,7 +68,7 @@ def test_question_field_mapping_and_preserved_ordering():
                 code="general",
                 questions=[
                     IntakeQuestionRecord(
-                        question_id="question-2",
+                        question_id=UUID("00000000-0000-0000-0000-000000000002"),
                         question_code="GEN-002",
                         label="Second question",
                         answer="No",
@@ -74,12 +76,12 @@ def test_question_field_mapping_and_preserved_ordering():
                         required=False,
                         risk_domain="Operations",
                         section_code="general",
-                        response_id="response-2",
-                        selected_option_id="option-2",
+                        response_id=UUID("00000000-0000-0000-0000-000000000202"),
+                        selected_option_id=UUID("00000000-0000-0000-0000-000000000302"),
                         answer_value="No",
                     ),
                     IntakeQuestionRecord(
-                        question_id="question-1",
+                        question_id=UUID("00000000-0000-0000-0000-000000000001"),
                         question_code="GEN-001",
                         label="First question",
                         answer="Yes",
@@ -87,7 +89,7 @@ def test_question_field_mapping_and_preserved_ordering():
                         required=True,
                         risk_domain="Security",
                         section_code="general",
-                        response_id="response-1",
+                        response_id=UUID("00000000-0000-0000-0000-000000000201"),
                         selected_option_id=None,
                         answer_value="Yes",
                     ),
@@ -97,7 +99,7 @@ def test_question_field_mapping_and_preserved_ordering():
                 code="operations",
                 questions=[
                     IntakeQuestionRecord(
-                        question_id="question-3",
+                        question_id=UUID("00000000-0000-0000-0000-000000000003"),
                         question_code="OPS-001",
                         label="Operations question",
                         answer=None,
@@ -117,9 +119,12 @@ def test_question_field_mapping_and_preserved_ordering():
     dto = assembler.to_dto(record)
 
     assert [section.code for section in dto.sections] == ["general", "operations"]
-    assert [question.questionId for question in dto.sections[0].questions] == ["question-2", "question-1"]
-    assert dto.sections[0].questions[0].model_dump() == {
-        "questionId": "question-2",
+    assert [question.questionId for question in dto.sections[0].questions] == [
+        UUID("00000000-0000-0000-0000-000000000002"),
+        UUID("00000000-0000-0000-0000-000000000001"),
+    ]
+    assert dto.sections[0].questions[0].model_dump(mode="json") == {
+        "questionId": "00000000-0000-0000-0000-000000000002",
         "questionCode": "GEN-002",
         "label": "Second question",
         "answer": "No",
@@ -127,8 +132,8 @@ def test_question_field_mapping_and_preserved_ordering():
         "required": False,
         "riskDomain": "Operations",
     }
-    assert dto.sections[0].questions[1].model_dump() == {
-        "questionId": "question-1",
+    assert dto.sections[0].questions[1].model_dump(mode="json") == {
+        "questionId": "00000000-0000-0000-0000-000000000001",
         "questionCode": "GEN-001",
         "label": "First question",
         "answer": "Yes",
@@ -143,21 +148,21 @@ def test_triage_mapping():
     record = build_record(
         triage=[
             IntakeTriageQuestionRecord(
-                question_id="triage-2",
+                question_id=UUID("00000000-0000-0000-0000-000000000402"),
                 question_code="TRIAGE-002",
                 label="Second triage question",
                 answer="No",
-                response_id="response-2",
-                selected_option_id="option-2",
+                response_id=UUID("00000000-0000-0000-0000-000000000502"),
+                selected_option_id=UUID("00000000-0000-0000-0000-000000000602"),
                 answer_value="No",
             ),
             IntakeTriageQuestionRecord(
-                question_id="triage-1",
+                question_id=UUID("00000000-0000-0000-0000-000000000401"),
                 question_code="TRIAGE-001",
                 label="First triage question",
                 answer="Yes",
-                response_id="response-1",
-                selected_option_id="option-1",
+                response_id=UUID("00000000-0000-0000-0000-000000000501"),
+                selected_option_id=UUID("00000000-0000-0000-0000-000000000601"),
                 answer_value="Yes",
             ),
         ]
@@ -165,9 +170,12 @@ def test_triage_mapping():
 
     dto = assembler.to_dto(record)
 
-    assert [question.questionId for question in dto.triage] == ["triage-2", "triage-1"]
-    assert dto.triage[0].model_dump() == {
-        "questionId": "triage-2",
+    assert [question.questionId for question in dto.triage] == [
+        UUID("00000000-0000-0000-0000-000000000402"),
+        UUID("00000000-0000-0000-0000-000000000401"),
+    ]
+    assert dto.triage[0].model_dump(mode="json") == {
+        "questionId": "00000000-0000-0000-0000-000000000402",
         "questionCode": "TRIAGE-002",
         "label": "Second triage question",
         "answer": "No",

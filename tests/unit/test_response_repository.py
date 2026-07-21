@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from sqlalchemy import select
 
 from app.models.database import AssessmentResponse
@@ -7,9 +8,11 @@ from app.models.enums import RiskLevel
 from app.repositories.response_repository import ResponseRepository
 from tests.conftest import add_question_with_options
 
+pytestmark = pytest.mark.asyncio
 
-def test_upsert_response_creates_then_updates_single_assessment_response(db_session, seeded_assessment):
-    question, options = add_question_with_options(
+
+async def test_upsert_response_creates_then_updates_single_assessment_response(db_session, seeded_assessment):
+    question, options = await add_question_with_options(
         db_session,
         seeded_assessment["questionnaire_version_id"],
         risk_domain="Security",
@@ -22,14 +25,14 @@ def test_upsert_response_creates_then_updates_single_assessment_response(db_sess
 
     repository = ResponseRepository()
 
-    created = repository.upsert_response(
+    created = await repository.upsert_response(
         db_session,
         assessment_id=seeded_assessment["assessment_id"],
         question_definition_id=question.id,
         selected_option_id=first_option.id,
         answer_value="Initial",
     )
-    updated = repository.upsert_response(
+    updated = await repository.upsert_response(
         db_session,
         assessment_id=seeded_assessment["assessment_id"],
         question_definition_id=question.id,
@@ -37,10 +40,12 @@ def test_upsert_response_creates_then_updates_single_assessment_response(db_sess
         answer_value="Updated",
     )
 
-    stored_responses = db_session.execute(
+    stored_responses = (
+        await db_session.execute(
         select(AssessmentResponse).where(
             AssessmentResponse.assessment_id == seeded_assessment["assessment_id"],
             AssessmentResponse.question_definition_id == question.id,
+        )
         )
     ).scalars().all()
 

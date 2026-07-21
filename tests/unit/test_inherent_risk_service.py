@@ -357,7 +357,7 @@ async def test_previous_runs_remain_unchanged_and_latest_successful_run_is_selec
 async def test_failed_run_is_not_selected_as_latest_completed_run(db_session, seeded_completed_run):
     db_session.add(
         QuestionAnalysisRun(
-            id=str(uuid4()),
+            id=uuid4(),
             assessment_id=seeded_completed_run["assessment_id"],
             status=AnalysisRunStatus.FAILED.value,
             scoring_config_version="existing-config-v1",
