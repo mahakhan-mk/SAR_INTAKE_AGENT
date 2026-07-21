@@ -44,7 +44,7 @@ Response
 
 ## POST /api/v1/assessments/{assessmentId}/analysis-runs
 
-Creates a new AI analysis run.
+Creates a new deterministic analysis run for triage-based inherent risk.
 
 Request
 
@@ -59,9 +59,18 @@ Response
 ```json
 {
   "analysisRunId": "uuid",
-  "status": "running"
+  "status": "completed"
 }
 ```
+
+Behavior
+
+- Returns `404` when `assessmentId` does not exist.
+- Persists one `question_analysis_runs` row and one `question_risk_results` row for each answered triage response.
+- Uses scoring rule version `inherent-risk-v1-percentage`.
+- Preserves previous runs.
+- Marks the run as `completed_with_limitations` when active triage questions are missing responses or when answer resolution required `answer_value` fallback.
+- Marks the run as `failed` when persistence fails; failed runs are never returned by the inherent-risk GET as the latest successful result.
 
 ---
 
@@ -77,17 +86,39 @@ Response
 {
   "assessmentId": "uuid",
   "analysisRunId": "uuid",
+  "status": "completed",
   "inherentRisk": {
     "level": "medium",
-    "highRiskQuestionCount": 3
+    "label": "Medium",
+    "highRiskQuestionCount": 3,
+    "sourceText": "Derived from SAR triage questions."
   },
-  "topRiskDrivers": [],
+  "topRiskDrivers": [
+    {
+      "domain": "Business Continuity",
+      "level": "high"
+    }
+  ],
   "executiveSummary": {
-    "text": "...",
-    "generatedAt": "..."
+    "text": null,
+    "status": "not_generated",
+    "generatedAt": null
+  },
+  "links": {
+    "aiAnalysis": "/api/v1/assessments/{assessmentId}/ai-analysis",
+    "reportPreview": "/api/v1/assessments/{assessmentId}/report-preview"
   }
 }
 ```
+
+Behavior
+
+- Returns `404` when `assessmentId` does not exist.
+- Returns a controlled `not_assessed` response when no completed analysis exists.
+- Returns the latest successful `question_analysis_runs` record when one already exists.
+- If no successful run exists and answered triage responses are present, the service calculates and persists a deterministic run before returning the screen DTO.
+- Does not expose numeric weights or aggregation formulas in the DTO.
+- Excludes Vendor Reputation entirely from this payload.
 
 ---
 

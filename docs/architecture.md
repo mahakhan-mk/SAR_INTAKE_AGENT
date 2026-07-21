@@ -217,3 +217,40 @@ Developer 2
 - Document Checklist
 - Report Preview
 - Report Generation
+
+## Implemented Inherent Risk Foundation
+
+- `GET /api/v1/assessments/{assessment_id}/inherent-risk` is implemented as a deterministic read-or-calculate flow.
+- `POST /api/v1/assessments/{assessment_id}/analysis-runs` now creates a synchronous deterministic run and preserves prior runs.
+- The API layer validates inputs and delegates only to the service.
+- Repository queries are split into small indexed reads:
+  - assessment header
+  - active triage questionnaire version
+  - triage question definitions
+  - assessment responses
+  - question options
+  - latest successful analysis run
+  - persisted question risk results
+- The service calculates per-question risk strictly from `question_options.risk_weight` and `question_options.risk_band`.
+- The service persists exactly one `question_analysis_runs` row plus `question_risk_results` rows in the same transaction.
+- The Inherent Risk and AI Analysis pages share the same `question_analysis_runs` record.
+- Vendor Reputation is excluded from the inherent-risk workflow and top-risk-driver output.
+- `question_analysis_runs` stores `triage_score`, `inherent_score`, `inherent_risk_level`, run status, and scoring rule version.
+- `question_risk_results` stores deterministic explanation text, confidence, and a constrained input snapshot for each answered triage response.
+
+## Implemented Scoring Policy
+
+- No stronger authoritative aggregation rule or seeded weight configuration was present in the repository as of July 21, 2026, so the backend uses explicit scoring rule version `inherent-risk-v1-percentage`.
+- Overall inherent risk is derived from triage questions only.
+- The service calculates:
+  - `total_score = sum(selected option risk_weight)`
+  - `max_score = sum(max option risk_weight for each answered triage question)`
+  - `score_percentage = total_score / max_score * 100`
+- Percentage mapping:
+  - `low`: `0 <= percentage < 25`
+  - `medium`: `25 <= percentage < 50`
+  - `high`: `50 <= percentage < 75`
+  - `critical`: `75 <= percentage <= 100`
+- If no triage responses exist, the page returns `not_assessed`.
+- If active triage questions exist but some are unanswered, the run status is `completed_with_limitations` and scoring uses available responses only.
+- Because the current schema does not expose an explicit required flag, the implementation treats all active non-Vendor-Reputation triage questions as required for limitation detection.
