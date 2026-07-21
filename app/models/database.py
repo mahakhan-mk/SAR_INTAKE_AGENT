@@ -58,11 +58,14 @@ class QuestionDefinition(Base):
         nullable=False,
         index=True,
     )
+    question_code: Mapped[str] = mapped_column(String(255), nullable=False)
+    section_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     prompt: Mapped[str] = mapped_column(Text, nullable=False)
     why_it_matters: Mapped[str] = mapped_column(Text, nullable=False)
     risk_domain: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    is_visible: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     is_required: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    display_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    question_order: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class QuestionOption(Base):
@@ -83,6 +86,13 @@ class QuestionOption(Base):
 
 class AssessmentResponse(Base):
     __tablename__ = "assessment_responses"
+    __table_args__ = (
+        UniqueConstraint(
+            "assessment_id",
+            "question_definition_id",
+            name="uq_assessment_responses_assessment_question",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
     assessment_id: Mapped[str] = mapped_column(ForeignKey("sar_assessments.id"), nullable=False, index=True)
@@ -147,7 +157,7 @@ class QuestionRiskResult(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
-Index("ix_question_definitions_version_order", QuestionDefinition.questionnaire_version_id, QuestionDefinition.display_order)
+Index("ix_question_definitions_version_order", QuestionDefinition.questionnaire_version_id, QuestionDefinition.question_order)
 Index("ix_question_options_question_order", QuestionOption.question_definition_id, QuestionOption.display_order)
 Index("ix_assessment_responses_assessment_question", AssessmentResponse.assessment_id, AssessmentResponse.question_definition_id)
 Index("ix_question_analysis_runs_assessment_created", QuestionAnalysisRun.assessment_id, QuestionAnalysisRun.created_at)

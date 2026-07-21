@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.api.dependencies import get_inherent_risk_scoring_policy, get_session
 from app.config import PercentageInherentRiskScoringPolicy
-from app.database import create_engine_from_url
+from app.database import create_engine_from_url, get_db
 from app.main import app
 from app.models.database import (
     AssessmentResponse,
@@ -62,24 +62,49 @@ async def seeded_assessment(db_session: AsyncSession) -> dict[str, str]:
     return {"assessment_id": assessment.id, "questionnaire_version_id": version.id}
 
 
+async def add_questionnaire_version(
+    session: AsyncSession,
+    *,
+    questionnaire_type: str,
+    version: str,
+    is_active: bool = True,
+) -> QuestionnaireVersion:
+    questionnaire_version = QuestionnaireVersion(
+        id=str(uuid4()),
+        questionnaire_type=questionnaire_type,
+        version=version,
+        is_active=is_active,
+    )
+    session.add(questionnaire_version)
+    await session.commit()
+    return questionnaire_version
+
+
 async def add_question_with_options(
     session: AsyncSession,
     questionnaire_version_id: str,
     *,
     risk_domain: str,
+    question_code: str | None = None,
+    section_code: str | None = "general",
     prompt: str | None = None,
     why_it_matters: str = "Configuration-defined rationale.",
+    is_visible: bool = True,
     is_required: bool = True,
+    question_order: int | None = 1,
     options: list[tuple[str, RiskLevel, float, str]] | None = None,
 ) -> tuple[QuestionDefinition, list[QuestionOption]]:
     question = QuestionDefinition(
         id=str(uuid4()),
         questionnaire_version_id=questionnaire_version_id,
+        question_code=question_code or f"Q-{uuid4().hex[:8]}",
+        section_code=section_code,
         prompt=prompt or f"{risk_domain} question",
         why_it_matters=why_it_matters,
         risk_domain=risk_domain,
+        is_visible=is_visible,
         is_required=is_required,
-        display_order=1,
+        question_order=question_order,
     )
     session.add(question)
     await session.flush()
@@ -109,19 +134,27 @@ async def add_question_with_option(
     risk_domain: str,
     risk_level: RiskLevel,
     risk_weight: float,
+    question_code: str | None = None,
+    section_code: str | None = "general",
     prompt: str | None = None,
     label: str = "Selected",
     why_it_matters: str = "Configuration-defined rationale.",
     risk_signal: str = "Configuration-defined signal.",
+    is_visible: bool = True,
     is_required: bool = True,
+    question_order: int | None = 1,
 ) -> tuple[QuestionDefinition, QuestionOption]:
     question, options = await add_question_with_options(
         session,
         questionnaire_version_id,
         risk_domain=risk_domain,
+        question_code=question_code,
+        section_code=section_code,
         prompt=prompt,
         why_it_matters=why_it_matters,
+        is_visible=is_visible,
         is_required=is_required,
+        question_order=question_order,
         options=[(label, risk_level, risk_weight, risk_signal)],
     )
     return question, options[0]
@@ -173,6 +206,7 @@ async def client(
             yield session
 
     app.dependency_overrides[get_session] = override_get_session
+    app.dependency_overrides[get_db] = override_get_session
     app.dependency_overrides[get_inherent_risk_scoring_policy] = PercentageInherentRiskScoringPolicy
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as test_client:
@@ -228,7 +262,7 @@ async def seeded_completed_run(db_session: AsyncSession, seeded_assessment: dict
             risk_signal=selected_option.risk_signal,
             ai_explanation='Question "Business Continuity question" was answered with "Selected". This matters because Configuration-defined rationale. The selected response indicates High disruption exposure..',
             ai_confidence=1.0,
-            input_snapshot='{"questionCode":"' + question.id + '","selectedResponse":"Selected","riskBand":"high","scoringRuleVersion":"existing-config-v1"}',
+            input_snapshot='{"questionCode":"' + question.question_code + '","selectedResponse":"Selected","riskBand":"high","scoringRuleVersion":"existing-config-v1"}',
         )
     )
     await db_session.commit()
