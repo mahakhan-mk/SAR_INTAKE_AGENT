@@ -2,26 +2,41 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
+from dotenv import load_dotenv
+
 from app.models.enums import RiskLevel
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+ENV_FILE = PROJECT_ROOT / ".env"
 
 DATABASE_SCHEMA_TOKEN = "configured_database_schema"
 
 
 @dataclass(frozen=True)
 class Settings:
-    database_url: str = os.getenv("DATABASE_URL", "sqlite:///./sar_assessment.db")
-    database_schema: str = os.getenv("DATABASE_SCHEMA", "kpmg_sar")
-    azure_openai_endpoint: str | None = os.getenv("AZURE_OPENAI_ENDPOINT")
-    azure_openai_api_key: str | None = os.getenv("AZURE_OPENAI_API_KEY")
-    azure_openai_deployment: str | None = os.getenv("AZURE_OPENAI_DEPLOYMENT")
-    azure_openai_timeout_seconds: float = float(os.getenv("AZURE_OPENAI_TIMEOUT_SECONDS", "30"))
-    azure_openai_api_version: str | None = os.getenv("AZURE_OPENAI_API_VERSION")
+    database_url: str
+    database_schema: str
+    azure_openai_endpoint: str | None
+    azure_openai_api_key: str | None
+    azure_openai_deployment: str | None
+    azure_openai_timeout_seconds: float
+    azure_openai_api_version: str | None
 
 
 def get_settings() -> Settings:
-    return Settings()
+    load_dotenv(dotenv_path=ENV_FILE, override=False)
+    return Settings(
+        database_url=os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./sar_assessment.db"),
+        database_schema=os.getenv("DATABASE_SCHEMA", "kpmg_sar"),
+        azure_openai_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
+        azure_openai_api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+        azure_openai_deployment=os.getenv("AZURE_OPENAI_DEPLOYMENT"),
+        azure_openai_timeout_seconds=float(os.getenv("AZURE_OPENAI_TIMEOUT_SECONDS", "30")),
+        azure_openai_api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
+    )
 
 
 class InherentRiskScoringPolicy(Protocol):

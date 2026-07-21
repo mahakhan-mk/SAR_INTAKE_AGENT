@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from collections import defaultdict
 
-from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.database import AssessmentResponse, QuestionDefinition, QuestionOption, QuestionnaireVersion, SarAssessment
 from app.models.dto import TriagedQuestionLoadResult, TriagedQuestionResponse
@@ -21,43 +21,45 @@ INTAKE_QUESTIONNAIRE_TYPE = "intake"
 
 
 class AssessmentRepository:
-    def get_assessment(self, session: Session, assessment_id: str) -> SarAssessment | None:
-        return session.get(SarAssessment, assessment_id)
+    async def get_assessment(self, session: AsyncSession, assessment_id: str) -> SarAssessment | None:
+        return await session.get(SarAssessment, assessment_id)
 
-    def get_question(self, session: Session, question_id: str) -> QuestionDefinition | None:
-        return session.get(QuestionDefinition, question_id)
+    async def get_question(self, session: AsyncSession, question_id: str) -> QuestionDefinition | None:
+        return await session.get(QuestionDefinition, question_id)
 
-    def get_question_option(
+    async def get_question_option(
         self,
-        session: Session,
+        session: AsyncSession,
         question_id: str,
         option_id: str,
     ) -> QuestionOption | None:
-        return session.execute(
-            select(QuestionOption).where(
-                QuestionOption.id == option_id,
-                QuestionOption.question_definition_id == question_id,
+        return (
+            await session.execute(
+                select(QuestionOption).where(
+                    QuestionOption.id == option_id,
+                    QuestionOption.question_definition_id == question_id,
+                )
             )
         ).scalars().first()
 
-    def load_intake_overview(
+    async def load_intake_overview(
         self,
-        session: Session,
+        session: AsyncSession,
         assessment_id: str,
     ) -> IntakeOverviewRecord | None:
-        assessment = self.get_assessment(session, assessment_id)
+        assessment = await self.get_assessment(session, assessment_id)
         if assessment is None:
             return None
 
-        intake_version = self._get_active_questionnaire_version(session, INTAKE_QUESTIONNAIRE_TYPE)
-        triage_version = self._get_active_questionnaire_version(session, QuestionnaireType.TRIAGE.value)
+        intake_version = await self._get_active_questionnaire_version(session, INTAKE_QUESTIONNAIRE_TYPE)
+        triage_version = await self._get_active_questionnaire_version(session, QuestionnaireType.TRIAGE.value)
 
-        intake_questions = self._load_visible_questions(
+        intake_questions = await self._load_visible_questions(
             session=session,
             questionnaire_version_id=intake_version.id if intake_version else None,
             order_by_section=True,
         )
-        triage_questions = self._load_visible_questions(
+        triage_questions = await self._load_visible_questions(
             session=session,
             questionnaire_version_id=triage_version.id if triage_version else None,
             order_by_section=False,
@@ -65,8 +67,8 @@ class AssessmentRepository:
 
         all_question_ids = [question.id for question in intake_questions]
         all_question_ids.extend(question.id for question in triage_questions)
-        responses_by_question_id = self._load_responses_by_question(session, assessment_id, all_question_ids)
-        options_by_question_id, option_by_id = self._load_options(session, all_question_ids)
+        responses_by_question_id = await self._load_responses_by_question(session, assessment_id, all_question_ids)
+        options_by_question_id, option_by_id = await self._load_options(session, all_question_ids)
 
         intake_question_records = [
             self._build_intake_question_record(
@@ -97,17 +99,17 @@ class AssessmentRepository:
             triage=triage_question_records,
         )
 
-    def load_active_triage_question_responses(
+    async def load_active_triage_question_responses(
         self,
-        session: Session,
+        session: AsyncSession,
         assessment_id: str,
     ) -> TriagedQuestionLoadResult:
-        version = self._get_active_questionnaire_version(session, QuestionnaireType.TRIAGE.value)
+        version = await self._get_active_questionnaire_version(session, QuestionnaireType.TRIAGE.value)
 
         if version is None:
             return TriagedQuestionLoadResult(question_responses=[], required_triage_question_count=0)
 
-        questions = self._load_visible_questions(
+        questions = await self._load_visible_questions(
             session=session,
             questionnaire_version_id=version.id,
             order_by_section=False,
@@ -120,7 +122,7 @@ class AssessmentRepository:
         question_ids = [question.id for question in questions]
         question_by_id = {question.id: question for question in questions}
 
-        responses = list(self._load_responses_by_question(session, assessment_id, question_ids).values())
+        responses = list((await self._load_responses_by_question(session, assessment_id, question_ids)).values())
 
         if not responses:
             return TriagedQuestionLoadResult(
@@ -128,7 +130,7 @@ class AssessmentRepository:
                 required_triage_question_count=sum(1 for question in questions if question.is_required),
             )
 
-        options_by_question, option_by_id = self._load_options(session, question_ids)
+        options_by_question, option_by_id = await self._load_options(session, question_ids)
 
         resolved_questions: list[TriagedQuestionResponse] = []
         unresolved_response_ids: list[str] = []
@@ -188,24 +190,26 @@ class AssessmentRepository:
             unresolved_response_ids=unresolved_response_ids,
         )
 
-    def _get_active_questionnaire_version(
+    async def _get_active_questionnaire_version(
         self,
-        session: Session,
+        session: AsyncSession,
         questionnaire_type: str,
     ) -> QuestionnaireVersion | None:
-        return session.execute(
-            select(QuestionnaireVersion)
-            .where(
-                QuestionnaireVersion.questionnaire_type == questionnaire_type,
-                QuestionnaireVersion.is_active.is_(True),
+        return (
+            await session.execute(
+                select(QuestionnaireVersion)
+                .where(
+                    QuestionnaireVersion.questionnaire_type == questionnaire_type,
+                    QuestionnaireVersion.is_active.is_(True),
+                )
+                .order_by(QuestionnaireVersion.created_at.desc(), QuestionnaireVersion.id.desc())
             )
-            .order_by(QuestionnaireVersion.created_at.desc(), QuestionnaireVersion.id.desc())
         ).scalars().first()
 
-    def _load_visible_questions(
+    async def _load_visible_questions(
         self,
         *,
-        session: Session,
+        session: AsyncSession,
         questionnaire_version_id: str | None,
         order_by_section: bool,
         exclude_vendor_reputation: bool = False,
@@ -213,59 +217,71 @@ class AssessmentRepository:
         if questionnaire_version_id is None:
             return []
 
-        statement = select(QuestionDefinition).where(
-            QuestionDefinition.questionnaire_version_id == questionnaire_version_id,
-            QuestionDefinition.is_visible.is_(True),
+        statement = (
+            select(QuestionDefinition)
+            .where(
+                QuestionDefinition.questionnaire_version_id == questionnaire_version_id,
+                QuestionDefinition.is_visible.is_(True),
+            )
+            .order_by(QuestionDefinition.id.asc())
         )
         if exclude_vendor_reputation:
             statement = statement.where(QuestionDefinition.risk_domain != VENDOR_REPUTATION_DOMAIN)
 
+        questions = (await session.execute(statement)).scalars().all()
         if order_by_section:
-            statement = statement.order_by(
-                func.coalesce(QuestionDefinition.section_code, "").asc(),
-                func.coalesce(QuestionDefinition.question_order, 0).asc(),
-                QuestionDefinition.id.asc(),
+            return sorted(
+                questions,
+                key=lambda question: (
+                    question.section_code or "",
+                    question.question_order if question.question_order is not None else 0,
+                    question.id,
+                ),
             )
-        else:
-            statement = statement.order_by(
-                func.coalesce(QuestionDefinition.question_order, 0).asc(),
-                QuestionDefinition.id.asc(),
-            )
+        return sorted(
+            questions,
+            key=lambda question: (
+                question.question_order if question.question_order is not None else 0,
+                question.id,
+            ),
+        )
 
-        return session.execute(statement).scalars().all()
-
-    def _load_responses_by_question(
+    async def _load_responses_by_question(
         self,
-        session: Session,
+        session: AsyncSession,
         assessment_id: str,
         question_ids: list[str],
     ) -> dict[str, AssessmentResponse]:
         if not question_ids:
             return {}
 
-        responses = session.execute(
-            select(AssessmentResponse)
-            .where(
-                AssessmentResponse.assessment_id == assessment_id,
-                AssessmentResponse.question_definition_id.in_(question_ids),
+        responses = (
+            await session.execute(
+                select(AssessmentResponse)
+                .where(
+                    AssessmentResponse.assessment_id == assessment_id,
+                    AssessmentResponse.question_definition_id.in_(question_ids),
+                )
+                .order_by(AssessmentResponse.created_at.asc(), AssessmentResponse.id.asc())
             )
-            .order_by(AssessmentResponse.created_at.asc(), AssessmentResponse.id.asc())
         ).scalars().all()
 
         return {response.question_definition_id: response for response in responses}
 
-    def _load_options(
+    async def _load_options(
         self,
-        session: Session,
+        session: AsyncSession,
         question_ids: list[str],
     ) -> tuple[dict[str, list[QuestionOption]], dict[str, QuestionOption]]:
         if not question_ids:
             return {}, {}
 
-        options = session.execute(
-            select(QuestionOption)
-            .where(QuestionOption.question_definition_id.in_(question_ids))
-            .order_by(QuestionOption.display_order.asc(), QuestionOption.id.asc())
+        options = (
+            await session.execute(
+                select(QuestionOption)
+                .where(QuestionOption.question_definition_id.in_(question_ids))
+                .order_by(QuestionOption.display_order.asc(), QuestionOption.id.asc())
+            )
         ).scalars().all()
 
         option_by_id = {option.id: option for option in options}

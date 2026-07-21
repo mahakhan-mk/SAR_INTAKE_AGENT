@@ -2,6 +2,8 @@
 .env.*
 !.env.example
 **/__pycache__/
+__pycache__/
+**pycache**/
 *.py[cod]
 .pytest_cache/
 .mypy_cache/

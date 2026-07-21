@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from collections.abc import Generator
+from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
-import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy.orm import Session, sessionmaker
+import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.api.dependencies import get_inherent_risk_scoring_policy, get_session
 from app.config import PercentageInherentRiskScoringPolicy
@@ -26,24 +26,25 @@ from app.models.database import (
 from app.models.enums import AnalysisRunStatus, QuestionnaireType, RiskLevel
 
 
-@pytest.fixture()
-def session_factory(tmp_path) -> sessionmaker:
-    engine = create_engine_from_url(f"sqlite:///{tmp_path / 'test.db'}")
-    Base.metadata.create_all(bind=engine)
-    return sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
+@pytest_asyncio.fixture()
+async def session_factory(tmp_path) -> AsyncGenerator[async_sessionmaker[AsyncSession], None]:
+    engine = create_engine_from_url(f"sqlite+aiosqlite:///{tmp_path / 'test.db'}")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    yield async_sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    await engine.dispose()
 
 
-@pytest.fixture()
-def db_session(session_factory: sessionmaker) -> Generator[Session, None, None]:
-    session = session_factory()
-    try:
+@pytest_asyncio.fixture()
+async def db_session(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> AsyncGenerator[AsyncSession, None]:
+    async with session_factory() as session:
         yield session
-    finally:
-        session.close()
 
 
-@pytest.fixture()
-def seeded_assessment(db_session: Session) -> dict[str, str]:
+@pytest_asyncio.fixture()
+async def seeded_assessment(db_session: AsyncSession) -> dict[str, str]:
     assessment = SarAssessment(
         id=str(uuid4()),
         technology_name="Copilot",
@@ -57,12 +58,12 @@ def seeded_assessment(db_session: Session) -> dict[str, str]:
         is_active=True,
     )
     db_session.add_all([assessment, version])
-    db_session.commit()
+    await db_session.commit()
     return {"assessment_id": assessment.id, "questionnaire_version_id": version.id}
 
 
-def add_questionnaire_version(
-    session: Session,
+async def add_questionnaire_version(
+    session: AsyncSession,
     *,
     questionnaire_type: str,
     version: str,
@@ -75,12 +76,12 @@ def add_questionnaire_version(
         is_active=is_active,
     )
     session.add(questionnaire_version)
-    session.commit()
+    await session.commit()
     return questionnaire_version
 
 
-def add_question_with_options(
-    session: Session,
+async def add_question_with_options(
+    session: AsyncSession,
     questionnaire_version_id: str,
     *,
     risk_domain: str,
@@ -106,7 +107,7 @@ def add_question_with_options(
         question_order=question_order,
     )
     session.add(question)
-    session.flush()
+    await session.flush()
 
     resolved_options = options or [("Selected", RiskLevel.LOW, 0.0, "Configuration-defined signal.")]
     option_models = [
@@ -122,12 +123,12 @@ def add_question_with_options(
         for index, (label, risk_level, risk_weight, risk_signal) in enumerate(resolved_options, start=1)
     ]
     session.add_all(option_models)
-    session.commit()
+    await session.commit()
     return question, option_models
 
 
-def add_question_with_option(
-    session: Session,
+async def add_question_with_option(
+    session: AsyncSession,
     questionnaire_version_id: str,
     *,
     risk_domain: str,
@@ -143,7 +144,7 @@ def add_question_with_option(
     is_required: bool = True,
     question_order: int | None = 1,
 ) -> tuple[QuestionDefinition, QuestionOption]:
-    question, options = add_question_with_options(
+    question, options = await add_question_with_options(
         session,
         questionnaire_version_id,
         risk_domain=risk_domain,
@@ -159,8 +160,8 @@ def add_question_with_option(
     return question, options[0]
 
 
-def add_response(
-    session: Session,
+async def add_response(
+    session: AsyncSession,
     assessment_id: str,
     question: QuestionDefinition,
     option: QuestionOption | None = None,
@@ -175,11 +176,11 @@ def add_response(
         answer_value=answer_value,
     )
     session.add(response)
-    session.commit()
+    await session.commit()
     return response
 
 
-@pytest.fixture()
+@pytest_asyncio.fixture()
 def executive_summary_prompt_path(tmp_path: Path) -> Path:
     prompt_path = tmp_path / "executive_summary.yaml"
     prompt_path.write_text(
@@ -196,28 +197,27 @@ def executive_summary_prompt_path(tmp_path: Path) -> Path:
     return prompt_path
 
 
-@pytest.fixture()
-def client(session_factory: sessionmaker) -> Generator[TestClient, None, None]:
-    def override_get_session():
-        session = session_factory()
-        try:
+@pytest_asyncio.fixture()
+async def client(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> AsyncGenerator[AsyncClient, None]:
+    async def override_get_session():
+        async with session_factory() as session:
             yield session
-        finally:
-            session.close()
 
     app.dependency_overrides[get_session] = override_get_session
     app.dependency_overrides[get_db] = override_get_session
     app.dependency_overrides[get_inherent_risk_scoring_policy] = PercentageInherentRiskScoringPolicy
 
-    with TestClient(app) as test_client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as test_client:
         yield test_client
 
     app.dependency_overrides.clear()
 
 
-@pytest.fixture()
-def seeded_completed_run(db_session: Session, seeded_assessment: dict[str, str]) -> dict[str, str]:
-    question, options = add_question_with_options(
+@pytest_asyncio.fixture()
+async def seeded_completed_run(db_session: AsyncSession, seeded_assessment: dict[str, str]) -> dict[str, str]:
+    question, options = await add_question_with_options(
         db_session,
         seeded_assessment["questionnaire_version_id"],
         risk_domain="Business Continuity",
@@ -227,7 +227,7 @@ def seeded_completed_run(db_session: Session, seeded_assessment: dict[str, str])
         ],
     )
     selected_option = options[0]
-    response = add_response(db_session, seeded_assessment["assessment_id"], question, selected_option)
+    response = await add_response(db_session, seeded_assessment["assessment_id"], question, selected_option)
     generated_at = datetime(2026, 7, 21, 12, 0, tzinfo=timezone.utc)
     run = QuestionAnalysisRun(
         id=str(uuid4()),
@@ -246,7 +246,7 @@ def seeded_completed_run(db_session: Session, seeded_assessment: dict[str, str])
         source_text="Derived from SAR triage questions.",
     )
     db_session.add(run)
-    db_session.flush()
+    await db_session.flush()
     db_session.add(
         QuestionRiskResult(
             id=str(uuid4()),
@@ -265,5 +265,5 @@ def seeded_completed_run(db_session: Session, seeded_assessment: dict[str, str])
             input_snapshot='{"questionCode":"' + question.question_code + '","selectedResponse":"Selected","riskBand":"high","scoringRuleVersion":"existing-config-v1"}',
         )
     )
-    db_session.commit()
+    await db_session.commit()
     return {"assessment_id": seeded_assessment["assessment_id"], "run_id": run.id}

@@ -1,5 +1,5 @@
 from fastapi import Depends
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.assemblers.intake_assembler import IntakeAssembler
 from app.assemblers.inherent_risk_assembler import InherentRiskAssembler
@@ -15,7 +15,7 @@ from app.services.intake_service import IntakeService
 from app.services.inherent_risk_service import InherentRiskService
 
 
-def get_session(db: Session = Depends(get_db)) -> Session:
+def get_session(db: AsyncSession = Depends(get_db)) -> AsyncSession:
     return db
 
 

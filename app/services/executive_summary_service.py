@@ -4,7 +4,7 @@ import hashlib
 import json
 from datetime import datetime, timezone
 
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.errors import AssessmentNotFoundError
 from app.llm.client import (
@@ -40,20 +40,20 @@ class ExecutiveSummaryService:
         self.prompt_loader = prompt_loader
         self.llm_client = llm_client
 
-    def generate(
+    async def generate(
         self,
-        session: Session,
+        session: AsyncSession,
         assessment_id: str,
         force: bool = False,
     ) -> ExecutiveSummaryGenerateResponseDTO:
-        assessment = self.assessment_repository.get_assessment(session, assessment_id)
+        assessment = await self.assessment_repository.get_assessment(session, assessment_id)
         if assessment is None:
             raise AssessmentNotFoundError()
 
-        snapshot = self.analysis_repository.get_latest_completed_snapshot(session, assessment_id)
+        snapshot = await self.analysis_repository.get_latest_completed_snapshot(session, assessment_id)
         if snapshot is None:
-            self.inherent_risk_service.create_analysis_run(session, assessment_id, force=False)
-            snapshot = self.analysis_repository.get_latest_completed_snapshot(session, assessment_id)
+            await self.inherent_risk_service.create_analysis_run(session, assessment_id, force=False)
+            snapshot = await self.analysis_repository.get_latest_completed_snapshot(session, assessment_id)
 
         if snapshot is None:
             raise RuntimeError("A completed inherent-risk analysis run is required before generating the executive summary.")
@@ -80,7 +80,7 @@ class ExecutiveSummaryService:
 
         try:
             summary_text = self.llm_client.generate_summary(prompt, input_payload)
-            run = self.analysis_repository.update_executive_summary(
+            run = await self.analysis_repository.update_executive_summary(
                 session=session,
                 analysis_run_id=snapshot.analysis_run_id,
                 summary_text=summary_text,
@@ -91,7 +91,7 @@ class ExecutiveSummaryService:
                 generated_at=generated_at,
                 error_summary=None,
             )
-            session.commit()
+            await session.commit()
             return self._build_response(
                 assessment_id=assessment_id,
                 analysis_run_id=run.id,
@@ -100,9 +100,10 @@ class ExecutiveSummaryService:
                 generated_at=generated_at,
             )
         except (AzureSummaryTimeoutError, AzureSummaryRequestError, InvalidSummaryOutputError) as exc:
-            session.rollback()
+            await session.rollback()
+            await session.refresh(assessment)
             fallback_text = self._build_fallback_summary(assessment, snapshot)
-            run = self.analysis_repository.update_executive_summary(
+            run = await self.analysis_repository.update_executive_summary(
                 session=session,
                 analysis_run_id=snapshot.analysis_run_id,
                 summary_text=fallback_text,
@@ -113,7 +114,7 @@ class ExecutiveSummaryService:
                 generated_at=generated_at,
                 error_summary=str(exc),
             )
-            session.commit()
+            await session.commit()
             return self._build_response(
                 assessment_id=assessment_id,
                 analysis_run_id=run.id,
