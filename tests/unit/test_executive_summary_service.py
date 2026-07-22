@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+import uuid
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -133,13 +134,13 @@ async def test_timeout_returns_fallback(db_session, seeded_assessment, executive
     service = build_executive_summary_service(executive_summary_prompt_path, llm_client)
 
     response = await service.generate(db_session, seeded_assessment["assessment_id"])
-    run = await db_session.get(QuestionAnalysisRun, response.analysisRunId)
+    run = await db_session.get(QuestionAnalysisRun, uuid.UUID(response.analysisRunId))
 
     assert response.executiveSummary.status == ExecutiveSummaryStatus.FALLBACK
     assert "currently assessed as Critical inherent risk" in response.executiveSummary.text
     assert run is not None
     assert run.status == "completed_with_limitations"
-    assert run.failure_reason == "Azure OpenAI request timed out."
+    assert run.error_summary == "Azure OpenAI request timed out."
 
 
 async def test_matching_input_hash_skips_llm_call(db_session, seeded_assessment, executive_summary_prompt_path):
@@ -177,7 +178,7 @@ async def test_stored_risk_level_is_never_changed(db_session, seeded_assessment,
 
     assert response.executiveSummary.status == ExecutiveSummaryStatus.GENERATED
     assert before is not None and after is not None
-    assert before.overall_risk_level == after.overall_risk_level == RiskLevel.CRITICAL
+    assert before.inherent_risk_level == after.inherent_risk_level == RiskLevel.CRITICAL
 
 
 async def test_mocked_azure_client_only_no_live_call(db_session, seeded_assessment, executive_summary_prompt_path):

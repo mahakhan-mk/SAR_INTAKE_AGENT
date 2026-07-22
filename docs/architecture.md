@@ -1,256 +1,125 @@
-
 # Architecture
 
-## Overview
+## Current Implemented Scope
 
-The SAR Assessment Service is responsible for Intake, Inherent Risk, AI Analysis, HITL, Document Checklist, and Report generation.
+The current application surface is the inherent-risk workflow and its executive-summary companion:
 
-Vendor Reputation is implemented in a separate service and consumed through its APIs.
+- deterministic analysis-run creation
+- inherent-risk read API
+- executive-summary generation and persistence
 
----
+The FastAPI app currently mounts only [app/api/v1/inherent_risk.py](/C:/Users/Lenovo/Documents/SAR_INTAKE_AGENT/app/api/v1/inherent_risk.py). `db.txt` is the schema source of truth for PostgreSQL.
 
-# High Level Flow
+## Layer Responsibilities
 
-Assessment
-        │
-        ▼
-Assessment Responses
-        │
-        ▼
-Analysis Service
-        │
-        ├──────────────► Question Analysis
-        │                     │
-        │                     ▼
-        │              question_risk_results
-        │
-        ├──────────────► Executive Summary
-        │                     │
-        │                     ▼
-        │             question_analysis_runs
-        │
-        ▼
-Assemblers
-        │
-        ├──────────────► Inherent Risk DTO
-        ├──────────────► AI Analysis DTO
-        ├──────────────► Checklist DTO
-        └──────────────► Report DTO
+- API routes validate request models and delegate to services.
+- Repositories load and persist ORM entities without building response DTOs.
+- Services own scoring, limitation handling, run creation, and executive-summary orchestration.
+- The assembler converts `InherentRiskScreenState` into the API DTO.
 
----
+## High-Level Flow
 
-# Layers
+```text
+assessment
+  -> assessment_responses
+  -> AssessmentRepository.load_active_triage_question_responses()
+  -> InherentRiskService
+     -> question_analysis_runs
+     -> question_risk_results
+  -> InherentRiskAssembler
+  -> API response
+```
 
-HTTP API
+Executive-summary generation reuses the latest successful analysis run:
 
-Responsible only for:
+```text
+question_analysis_runs + question_risk_results
+  -> ExecutiveSummaryService._build_input_payload()
+  -> AzureExecutiveSummaryClient
+  -> question_analysis_runs.executive_summary*
+```
 
-- validation
-- authentication
-- calling services
+## Triage Question Selection
 
-No business logic.
+`AssessmentRepository.load_active_triage_question_responses()` loads only the latest active triage questionnaire version and excludes questions that should not participate in scoring:
 
----
+- `question_definitions.is_visible = true`
+- `question_definitions.response_type in ('single_select', 'multi_select')`
+- `assessment_responses.response_status = 'answered'`
 
-Repositories
+Questions that are hidden, non-scoreable, unanswered, or unresolved against configured options never become `question_risk_results`.
 
-Responsible only for:
+## JSONB Answer Resolution
 
-- SELECT
-- INSERT
-- UPDATE
-- DELETE
+`assessment_responses.answer_value` is treated as JSONB in PostgreSQL and is parsed by `AssessmentRepository._extract_candidate_values()` in this order:
 
-No DTO construction.
+- raw string value
+- object keys `optionCode`, `option_code`, `selectedResponse`, `optionLabel`, `option_label`, `value`
+- list values containing strings
 
----
+Option matching is `option_code` first and `option_label` second. If no configured `question_options` row can be resolved, the response is recorded as a limitation and excluded from scoring output.
 
-Services
+## Deterministic Scoring Flow
 
-Responsible for:
+The inherent-risk service never calls an LLM. It creates question results directly from configured triage options:
 
-- orchestration
-- scoring
-- LLM calls
-- checklist rules
-- report generation
+- `risk_weight`, `risk_band`, `why_it_matters`, and `risk_signal` come from `question_options`
+- `risk_domain`, `question_text`, and `is_required` come from `question_definitions`
+- `scoring_rule_version` is `inherent-risk-v1-percentage`
 
----
+Per run:
 
-Assemblers
+- `triage_score = sum(selected option risk_weight)`
+- `inherent_score = sum(selected risk_weight) / sum(max risk_weight per resolved question) * 100`
+- score bands map to `low`, `medium`, `high`, `critical`
+- no resolved questions returns `not_assessed`
 
-Responsible only for converting domain objects into React DTOs.
+Run status is:
 
----
+- `completed` when all required scorable triage questions are resolved
+- `completed_with_limitations` when required questions are unanswered, responses cannot be resolved, or no resolved triage responses exist
+- `failed` only when persistence fails
 
-# AI Analysis Flow
+`question_definitions.is_required` is implemented and is the field used for missing-response limitation detection.
 
-Assessment Responses
-        │
-        ▼
-Question Analysis Service
-        │
-        ▼
-question_analysis_runs
+## Persistence Model
 
-        │
-        ▼
-question_risk_results
+Each successful deterministic run persists:
 
-Each analysed question contains:
+- one `question_analysis_runs` row
+- zero or more `question_risk_results` rows, one per resolved answered triage response
 
-- selected response
-- why_it_matters (database)
-- risk_signal (database)
-- AI explanation
-- AI confidence
-- reviewer override
+`question_risk_results.input_snapshot` is the canonical persisted payload for question-level reconstruction. It includes:
 
----
+- question identifiers and text
+- selected option identifiers, code, and label
+- selected response text
+- `riskWeight` and `maxRiskWeight`
+- `whyItMatters`, `riskSignal`, `riskBand`
+- `scoringRuleVersion`
 
-# Executive Summary
+`AnalysisRepository.get_latest_completed_snapshot()` rebuilds `ComputedQuestionRisk` objects from `question_risk_results` plus `input_snapshot`, so the stored snapshot remains the source for downstream reads.
 
-Input
+## Executive Summary Flow
 
-- assessment context
-- calculated inherent risk
-- highest risk drivers
-- top domains
+`POST /api/v1/assessments/{assessment_id}/inherent-risk/executive-summary` uses the latest successful analysis snapshot. If none exists, it first creates one through the inherent-risk service.
 
-The LLM does not calculate risk.
+The summary flow:
 
-It explains the deterministic assessment.
+- builds a deterministic input payload from assessment context, inherent-risk level, high-risk count, top risk drivers, material questions, and material limitations
+- hashes that payload and reuses the stored summary when the hash matches and `force = false`
+- loads the YAML prompt from `app/prompts/executive_summary.yaml`
+- calls Azure OpenAI only to explain the deterministic result
+- stores summary text and summary metadata on `question_analysis_runs`
 
-The generated summary is stored in:
+If Azure OpenAI times out, fails, or returns invalid structured output, the service persists a fallback summary, marks the summary status as `fallback`, and keeps the run in `completed_with_limitations`.
 
-question_analysis_runs.executive_summary
+## Runtime and Schema Dependency
 
----
+The maintained database contract is PostgreSQL schema `kpmg_sar` aligned to [db.txt](/C:/Users/Lenovo/Documents/SAR_INTAKE_AGENT/db.txt).
 
-# Document Checklist
+Known dependency:
 
-Consumes
-
-- assessment responses
-- inherent risk
-- AI analysis
-
-Produces
-
-- checklist items
-- missing documents
-- reviewer overrides
-
----
-
-# Report Preview
-
-Consumes
-
-- Intake
-- Inherent Risk
-- AI Analysis
-- Document Checklist
-
-Produces one assembled DTO.
-
-The report does not rerun AI analysis.
-
----
-
-# Database Ownership
-
-question_definitions
-
-- question
-- why_it_matters
-
-question_options
-
-- option
-- risk_weight
-- risk_band
-- risk_signal
-
-assessment_responses
-
-- selected answers
-
-question_analysis_runs
-
-- overall analysis
-- executive summary
-
-question_risk_results
-
-- AI explanation
-- confidence
-- AI risk
-
-Reviewer overrides are stored separately and never overwrite AI output.
-
----
-
-# Shared Analysis Run
-
-The Inherent Risk page and AI Analysis page use the same analysis run.
-
-Only one analysis pipeline exists.
-
-The pages are different projections of the same stored results.
-
----
-
-# Development Responsibilities
-
-Developer 1
-
-- Intake
-- AI Analysis
-- HITL
-
-Developer 2
-
-- Inherent Risk
-- Executive Summary
-- Document Checklist
-- Report Preview
-- Report Generation
-
-## Implemented Inherent Risk Foundation
-
-- `GET /api/v1/assessments/{assessment_id}/inherent-risk` is implemented as a deterministic read-or-calculate flow.
-- `POST /api/v1/assessments/{assessment_id}/analysis-runs` now creates a synchronous deterministic run and preserves prior runs.
-- The API layer validates inputs and delegates only to the service.
-- Repository queries are split into small indexed reads:
-  - assessment header
-  - active triage questionnaire version
-  - triage question definitions
-  - assessment responses
-  - question options
-  - latest successful analysis run
-  - persisted question risk results
-- The service calculates per-question risk strictly from `question_options.risk_weight` and `question_options.risk_band`.
-- The service persists exactly one `question_analysis_runs` row plus `question_risk_results` rows in the same transaction.
-- The Inherent Risk and AI Analysis pages share the same `question_analysis_runs` record.
-- Vendor Reputation is excluded from the inherent-risk workflow and top-risk-driver output.
-- `question_analysis_runs` stores `triage_score`, `inherent_score`, `inherent_risk_level`, run status, and scoring rule version.
-- `question_risk_results` stores deterministic explanation text, confidence, and a constrained input snapshot for each answered triage response.
-
-## Implemented Scoring Policy
-
-- No stronger authoritative aggregation rule or seeded weight configuration was present in the repository as of July 21, 2026, so the backend uses explicit scoring rule version `inherent-risk-v1-percentage`.
-- Overall inherent risk is derived from triage questions only.
-- The service calculates:
-  - `total_score = sum(selected option risk_weight)`
-  - `max_score = sum(max option risk_weight for each answered triage question)`
-  - `score_percentage = total_score / max_score * 100`
-- Percentage mapping:
-  - `low`: `0 <= percentage < 25`
-  - `medium`: `25 <= percentage < 50`
-  - `high`: `50 <= percentage < 75`
-  - `critical`: `75 <= percentage <= 100`
-- If no triage responses exist, the page returns `not_assessed`.
-- If active triage questions exist but some are unanswered, the run status is `completed_with_limitations` and scoring uses available responses only.
-- Because the current schema does not expose an explicit required flag, the implementation treats all active non-Vendor-Reputation triage questions as required for limitation detection.
+- [migrations/20260721_add_question_analysis_run_executive_summary_metadata.py](/C:/Users/Lenovo/Documents/SAR_INTAKE_AGENT/migrations/20260721_add_question_analysis_run_executive_summary_metadata.py) only adds executive-summary metadata columns to `question_analysis_runs`
+- it assumes the base table already exists
+- it does not create the full schema from `db.txt`

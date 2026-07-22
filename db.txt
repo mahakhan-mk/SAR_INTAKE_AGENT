@@ -1,0 +1,196 @@
+-- kpmg_sar.questionnaire_versions definition
+
+-- Drop table
+
+-- DROP TABLE kpmg_sar.questionnaire_versions;
+
+CREATE TABLE kpmg_sar.questionnaire_versions (
+	id uuid DEFAULT gen_random_uuid() NOT NULL,
+	questionnaire_type text NOT NULL,
+	"version" text NOT NULL,
+	status text DEFAULT 'active'::text NOT NULL,
+	created_at timestamptz DEFAULT now() NOT NULL,
+	CONSTRAINT questionnaire_versions_pkey PRIMARY KEY (id),
+	CONSTRAINT questionnaire_versions_status_check CHECK ((status = ANY (ARRAY['active'::text, 'retired'::text]))),
+	CONSTRAINT questionnaire_versions_type_check CHECK ((questionnaire_type = ANY (ARRAY['intake'::text, 'triage'::text]))),
+	CONSTRAINT uq_questionnaire_versions_type_version UNIQUE (questionnaire_type, version)
+);
+
+
+-- kpmg_sar.sar_assessments definition
+
+-- Drop table
+
+-- DROP TABLE kpmg_sar.sar_assessments;
+
+CREATE TABLE kpmg_sar.sar_assessments (
+	id uuid DEFAULT gen_random_uuid() NOT NULL,
+	technology_name text NOT NULL,
+	vendor_name text NULL,
+	product_name text NULL,
+	status text DEFAULT 'received'::text NOT NULL,
+	requested_by text NULL,
+	created_at timestamptz DEFAULT now() NOT NULL,
+	updated_at timestamptz DEFAULT now() NOT NULL,
+	completed_at timestamptz NULL,
+	CONSTRAINT sar_assessments_completion_check CHECK (((completed_at IS NULL) OR (completed_at >= created_at))),
+	CONSTRAINT sar_assessments_pkey PRIMARY KEY (id),
+	CONSTRAINT sar_assessments_status_check CHECK ((status = ANY (ARRAY['received'::text, 'processing'::text, 'awaiting_review'::text, 'completed'::text, 'completed_with_limitations'::text, 'failed'::text])))
+);
+
+-- Table Triggers
+
+create trigger trg_sar_assessments_updated_at before
+update
+    on
+    kpmg_sar.sar_assessments for each row execute function kpmg_sar.set_updated_at();
+
+
+-- kpmg_sar.question_analysis_runs definition
+
+-- Drop table
+
+-- DROP TABLE kpmg_sar.question_analysis_runs;
+
+CREATE TABLE kpmg_sar.question_analysis_runs (
+	id uuid DEFAULT gen_random_uuid() NOT NULL,
+	assessment_id uuid NOT NULL,
+	status text DEFAULT 'queued'::text NOT NULL,
+	model_deployment text NULL,
+	prompt_version text NULL,
+	scoring_rule_version text NOT NULL,
+	intake_score numeric NULL,
+	triage_score numeric NULL,
+	inherent_score numeric NULL,
+	inherent_risk_level text NULL,
+	executive_summary text NULL,
+	error_summary text NULL,
+	started_at timestamptz NULL,
+	completed_at timestamptz NULL,
+	created_at timestamptz DEFAULT now() NOT NULL,
+	executive_summary_model text NULL,
+	executive_summary_prompt_version text NULL,
+	executive_summary_input_hash text NULL,
+	executive_summary_generated_at timestamptz NULL,
+	CONSTRAINT question_analysis_runs_pkey PRIMARY KEY (id),
+	CONSTRAINT question_analysis_runs_risk_level_check CHECK (((inherent_risk_level IS NULL) OR (inherent_risk_level = ANY (ARRAY['low'::text, 'medium'::text, 'high'::text, 'critical'::text, 'not_assessed'::text])))),
+	CONSTRAINT question_analysis_runs_status_check CHECK ((status = ANY (ARRAY['queued'::text, 'running'::text, 'completed'::text, 'completed_with_limitations'::text, 'failed'::text]))),
+	CONSTRAINT question_analysis_runs_timestamp_check CHECK (((completed_at IS NULL) OR (started_at IS NULL) OR (completed_at >= started_at))),
+	CONSTRAINT question_analysis_runs_assessment_id_fkey FOREIGN KEY (assessment_id) REFERENCES kpmg_sar.sar_assessments(id) ON DELETE CASCADE
+);
+CREATE INDEX idx_question_analysis_runs_assessment ON kpmg_sar.question_analysis_runs USING btree (assessment_id);
+CREATE INDEX idx_question_analysis_runs_status ON kpmg_sar.question_analysis_runs USING btree (status);
+
+
+-- kpmg_sar.question_definitions definition
+
+-- Drop table
+
+-- DROP TABLE kpmg_sar.question_definitions;
+
+CREATE TABLE kpmg_sar.question_definitions (
+	id uuid DEFAULT gen_random_uuid() NOT NULL,
+	questionnaire_version_id uuid NOT NULL,
+	question_code text NOT NULL,
+	question_text text NOT NULL,
+	response_type text NOT NULL,
+	is_required bool DEFAULT false NOT NULL,
+	section_code text NULL,
+	question_order int4 NULL,
+	risk_domain text NULL,
+	is_visible bool DEFAULT true NOT NULL,
+	CONSTRAINT question_definitions_pkey PRIMARY KEY (id),
+	CONSTRAINT question_definitions_response_type_check CHECK ((response_type = ANY (ARRAY['text'::text, 'number'::text, 'boolean'::text, 'date'::text, 'single_select'::text, 'multi_select'::text]))),
+	CONSTRAINT uq_question_definitions_version_code UNIQUE (questionnaire_version_id, question_code),
+	CONSTRAINT question_definitions_questionnaire_version_id_fkey FOREIGN KEY (questionnaire_version_id) REFERENCES kpmg_sar.questionnaire_versions(id) ON DELETE RESTRICT
+);
+CREATE INDEX idx_question_definitions_version ON kpmg_sar.question_definitions USING btree (questionnaire_version_id);
+
+
+-- kpmg_sar.question_options definition
+
+-- Drop table
+
+-- DROP TABLE kpmg_sar.question_options;
+
+CREATE TABLE kpmg_sar.question_options (
+	id uuid DEFAULT gen_random_uuid() NOT NULL,
+	question_id uuid NOT NULL,
+	option_code text NOT NULL,
+	option_label text NOT NULL,
+	risk_weight numeric NULL,
+	display_order int2 NOT NULL,
+	risk_band text NULL,
+	why_it_matters text NULL,
+	risk_signal text NULL,
+	CONSTRAINT question_options_display_order_check CHECK (((display_order IS NULL) OR (display_order > 0))),
+	CONSTRAINT question_options_pkey PRIMARY KEY (id),
+	CONSTRAINT question_options_risk_band_check CHECK (((risk_band IS NULL) OR (risk_band = ANY (ARRAY['low'::text, 'medium'::text, 'high'::text, 'critical'::text])))),
+	CONSTRAINT uq_question_options_question_code UNIQUE (question_id, option_code),
+	CONSTRAINT uq_question_options_question_order UNIQUE (question_id, display_order),
+	CONSTRAINT question_options_question_id_fkey FOREIGN KEY (question_id) REFERENCES kpmg_sar.question_definitions(id) ON DELETE CASCADE
+);
+CREATE INDEX idx_question_options_question ON kpmg_sar.question_options USING btree (question_id);
+
+
+-- kpmg_sar.assessment_responses definition
+
+-- Drop table
+
+-- DROP TABLE kpmg_sar.assessment_responses;
+
+CREATE TABLE kpmg_sar.assessment_responses (
+	id uuid DEFAULT gen_random_uuid() NOT NULL,
+	assessment_id uuid NOT NULL,
+	question_id uuid NOT NULL,
+	answer_value jsonb NULL,
+	response_status text DEFAULT 'answered'::text NOT NULL,
+	created_at timestamptz DEFAULT now() NOT NULL,
+	updated_at timestamptz DEFAULT now() NOT NULL,
+	reviewer_remarks text NULL,
+	CONSTRAINT assessment_responses_answer_check CHECK ((((response_status = 'answered'::text) AND (answer_value IS NOT NULL)) OR (response_status = ANY (ARRAY['unanswered'::text, 'not_applicable'::text])))),
+	CONSTRAINT assessment_responses_pkey PRIMARY KEY (id),
+	CONSTRAINT assessment_responses_status_check CHECK ((response_status = ANY (ARRAY['answered'::text, 'unanswered'::text, 'not_applicable'::text]))),
+	CONSTRAINT uq_assessment_responses_assessment_question UNIQUE (assessment_id, question_id),
+	CONSTRAINT assessment_responses_assessment_id_fkey FOREIGN KEY (assessment_id) REFERENCES kpmg_sar.sar_assessments(id) ON DELETE CASCADE,
+	CONSTRAINT assessment_responses_question_id_fkey FOREIGN KEY (question_id) REFERENCES kpmg_sar.question_definitions(id) ON DELETE RESTRICT
+);
+CREATE INDEX idx_assessment_responses_assessment ON kpmg_sar.assessment_responses USING btree (assessment_id);
+CREATE INDEX idx_assessment_responses_question ON kpmg_sar.assessment_responses USING btree (question_id);
+
+-- Table Triggers
+
+create trigger trg_assessment_responses_updated_at before
+update
+    on
+    kpmg_sar.assessment_responses for each row execute function kpmg_sar.set_updated_at();
+
+
+-- kpmg_sar.question_risk_results definition
+
+-- Drop table
+
+-- DROP TABLE kpmg_sar.question_risk_results;
+
+CREATE TABLE kpmg_sar.question_risk_results (
+	id uuid DEFAULT gen_random_uuid() NOT NULL,
+	analysis_run_id uuid NOT NULL,
+	response_id uuid NOT NULL,
+	risk_domain text NULL,
+	risk_score numeric NULL,
+	risk_level text NOT NULL,
+	risk_impact text NULL,
+	explanation text NOT NULL,
+	confidence numeric NULL,
+	input_snapshot jsonb NOT NULL,
+	created_at timestamptz DEFAULT now() NOT NULL,
+	risk_signal text NULL,
+	CONSTRAINT question_risk_results_confidence_check CHECK (((confidence IS NULL) OR ((confidence >= (0)::numeric) AND (confidence <= (1)::numeric)))),
+	CONSTRAINT question_risk_results_level_check CHECK ((risk_level = ANY (ARRAY['low'::text, 'medium'::text, 'high'::text, 'critical'::text, 'not_assessed'::text]))),
+	CONSTRAINT question_risk_results_pkey PRIMARY KEY (id),
+	CONSTRAINT uq_question_risk_results_run_response UNIQUE (analysis_run_id, response_id),
+	CONSTRAINT question_risk_results_analysis_run_id_fkey FOREIGN KEY (analysis_run_id) REFERENCES kpmg_sar.question_analysis_runs(id) ON DELETE CASCADE,
+	CONSTRAINT question_risk_results_response_id_fkey FOREIGN KEY (response_id) REFERENCES kpmg_sar.assessment_responses(id) ON DELETE RESTRICT
+);
+CREATE INDEX idx_question_risk_results_analysis_run ON kpmg_sar.question_risk_results USING btree (analysis_run_id);
+CREATE INDEX idx_question_risk_results_response ON kpmg_sar.question_risk_results USING btree (response_id);

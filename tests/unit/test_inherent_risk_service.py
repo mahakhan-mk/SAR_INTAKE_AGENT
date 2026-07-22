@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import builtins
-from uuid import uuid4
+import uuid
 
 import pytest
 from sqlalchemy import select
@@ -61,7 +61,7 @@ async def test_assessment_not_found(db_session):
     service = build_service()
 
     with pytest.raises(AssessmentNotFoundError):
-        await service.get_inherent_risk_screen(db_session, str(uuid4()))
+        await service.get_inherent_risk_screen(db_session, uuid.uuid4())
 
 
 async def test_assessment_with_no_responses_returns_not_assessed(db_session, seeded_assessment):
@@ -129,11 +129,11 @@ async def test_optional_unanswered_questions_do_not_create_limitations(db_sessio
 
     service = build_service()
     run_dto = await service.create_analysis_run(db_session, seeded_assessment["assessment_id"])
-    run = await db_session.get(QuestionAnalysisRun, run_dto.analysisRunId)
+    run = await db_session.get(QuestionAnalysisRun, uuid.UUID(run_dto.analysisRunId))
 
     assert run_dto.status == AnalysisRunStatus.COMPLETED
     assert run is not None
-    assert run.limitation_summary is None
+    assert run.error_summary is None
 
 
 async def test_required_unanswered_questions_do_create_limitations(db_session, seeded_assessment):
@@ -161,11 +161,11 @@ async def test_required_unanswered_questions_do_create_limitations(db_session, s
 
     service = build_service()
     run_dto = await service.create_analysis_run(db_session, seeded_assessment["assessment_id"])
-    run = await db_session.get(QuestionAnalysisRun, run_dto.analysisRunId)
+    run = await db_session.get(QuestionAnalysisRun, uuid.UUID(run_dto.analysisRunId))
 
     assert run_dto.status == AnalysisRunStatus.COMPLETED_WITH_LIMITATIONS
     assert run is not None
-    assert "unanswered" in (run.limitation_summary or "")
+    assert run.error_summary is None
 
 
 async def test_high_risk_question_count_counts_high_and_critical_only(db_session, seeded_assessment):
@@ -213,12 +213,12 @@ async def test_top_risk_drivers_are_limited_and_deterministic(db_session, seeded
 
     assert [driver.model_dump() for driver in dto.topRiskDrivers] == [
         {"domain": "Business Continuity", "level": RiskLevel.CRITICAL},
+        {"domain": "Vendor Reputation", "level": RiskLevel.CRITICAL},
         {"domain": "Security", "level": RiskLevel.HIGH},
-        {"domain": "Operations", "level": RiskLevel.HIGH},
     ]
 
 
-async def test_selected_option_id_path_sets_full_confidence(db_session, seeded_assessment):
+async def test_answer_value_json_path_sets_full_confidence(db_session, seeded_assessment):
     question, options = await add_question_with_options(
         db_session,
         seeded_assessment["questionnaire_version_id"],
@@ -234,14 +234,16 @@ async def test_selected_option_id_path_sets_full_confidence(db_session, seeded_a
     run_dto = await service.create_analysis_run(db_session, seeded_assessment["assessment_id"])
     stored_result = (
         await db_session.execute(
-            select(QuestionRiskResult).where(QuestionRiskResult.analysis_run_id == run_dto.analysisRunId)
+            select(QuestionRiskResult).where(
+                QuestionRiskResult.analysis_run_id == uuid.UUID(run_dto.analysisRunId)
+            )
         )
     ).scalars().one()
 
-    assert stored_result.ai_confidence == 1.0
+    assert stored_result.confidence == 1.0
 
 
-async def test_answer_value_fallback_path_sets_lower_confidence(db_session, seeded_assessment):
+async def test_unresolvable_answer_value_json_creates_limitation(db_session, seeded_assessment):
     question, options = await add_question_with_options(
         db_session,
         seeded_assessment["questionnaire_version_id"],
@@ -256,19 +258,21 @@ async def test_answer_value_fallback_path_sets_lower_confidence(db_session, seed
         seeded_assessment["assessment_id"],
         question,
         option=None,
-        answer_value=options[0].label,
+        answer_value={"selectedResponse": "Unknown option"},
     )
 
     service = build_service()
     run_dto = await service.create_analysis_run(db_session, seeded_assessment["assessment_id"])
-    stored_result = (
+    stored_results = (
         await db_session.execute(
-            select(QuestionRiskResult).where(QuestionRiskResult.analysis_run_id == run_dto.analysisRunId)
+            select(QuestionRiskResult).where(
+                QuestionRiskResult.analysis_run_id == uuid.UUID(run_dto.analysisRunId)
+            )
         )
-    ).scalars().one()
+    ).scalars().all()
 
     assert run_dto.status == AnalysisRunStatus.COMPLETED_WITH_LIMITATIONS
-    assert stored_result.ai_confidence == 0.8
+    assert stored_results == []
 
 
 async def test_db_configuration_fields_are_read_and_explanation_uses_db_values(db_session, seeded_assessment):
@@ -288,14 +292,16 @@ async def test_db_configuration_fields_are_read_and_explanation_uses_db_values(d
     run_dto = await service.create_analysis_run(db_session, seeded_assessment["assessment_id"])
     stored_result = (
         await db_session.execute(
-            select(QuestionRiskResult).where(QuestionRiskResult.analysis_run_id == run_dto.analysisRunId)
+            select(QuestionRiskResult).where(
+                QuestionRiskResult.analysis_run_id == uuid.UUID(run_dto.analysisRunId)
+            )
         )
     ).scalars().one()
 
-    assert stored_result.why_it_matters == "Stored why-it-matters text."
+    assert stored_result.risk_impact == "Stored why-it-matters text."
     assert stored_result.risk_signal == "Stored risk signal text."
-    assert "Stored why-it-matters text." in (stored_result.ai_explanation or "")
-    assert "Stored risk signal text." in (stored_result.ai_explanation or "")
+    assert "Stored why-it-matters text." in stored_result.explanation
+    assert "Stored risk signal text." in stored_result.explanation
 
 
 async def test_existing_completed_run_is_returned_correctly(db_session, seeded_completed_run):
@@ -303,7 +309,7 @@ async def test_existing_completed_run_is_returned_correctly(db_session, seeded_c
 
     dto = await service.get_inherent_risk_screen(db_session, seeded_completed_run["assessment_id"])
 
-    assert dto.analysisRunId == seeded_completed_run["run_id"]
+    assert dto.analysisRunId == str(seeded_completed_run["run_id"])
     assert dto.executiveSummary.text == "Stored summary."
     assert dto.executiveSummary.status == ExecutiveSummaryStatus.GENERATED
 
@@ -322,7 +328,7 @@ async def test_previous_runs_remain_unchanged_and_latest_successful_run_is_selec
     service = build_service()
 
     first_run = await service.create_analysis_run(db_session, seeded_assessment["assessment_id"])
-    first_row = await db_session.get(QuestionAnalysisRun, first_run.analysisRunId)
+    first_row = await db_session.get(QuestionAnalysisRun, uuid.UUID(first_run.analysisRunId))
     assert first_row is not None
     first_score = first_row.inherent_score
 
@@ -347,7 +353,7 @@ async def test_previous_runs_remain_unchanged_and_latest_successful_run_is_selec
     ).scalars().all()
 
     assert len(run_rows) == 2
-    assert (await db_session.get(QuestionAnalysisRun, first_run.analysisRunId)).inherent_score == first_score
+    assert (await db_session.get(QuestionAnalysisRun, uuid.UUID(first_run.analysisRunId))).inherent_score == first_score
 
     dto = await service.get_inherent_risk_screen(db_session, seeded_assessment["assessment_id"])
     assert dto.analysisRunId == second_run.analysisRunId
@@ -357,12 +363,15 @@ async def test_previous_runs_remain_unchanged_and_latest_successful_run_is_selec
 async def test_failed_run_is_not_selected_as_latest_completed_run(db_session, seeded_completed_run):
     db_session.add(
         QuestionAnalysisRun(
+<<<<<<< HEAD
+            id=uuid.uuid4(),
+=======
             id=uuid4(),
+>>>>>>> origin/main
             assessment_id=seeded_completed_run["assessment_id"],
             status=AnalysisRunStatus.FAILED.value,
-            scoring_config_version="existing-config-v1",
-            overall_risk_level=RiskLevel.NOT_ASSESSED.value,
-            source_text="Derived from SAR triage questions.",
+            scoring_rule_version="existing-config-v1",
+            inherent_risk_level=RiskLevel.NOT_ASSESSED.value,
         )
     )
     await db_session.commit()
@@ -370,7 +379,7 @@ async def test_failed_run_is_not_selected_as_latest_completed_run(db_session, se
     service = build_service()
     dto = await service.get_inherent_risk_screen(db_session, seeded_completed_run["assessment_id"])
 
-    assert dto.analysisRunId == seeded_completed_run["run_id"]
+    assert dto.analysisRunId == str(seeded_completed_run["run_id"])
     assert dto.status == AnalysisRunStatus.COMPLETED
 
 

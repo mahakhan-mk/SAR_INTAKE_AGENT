@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
 from pathlib import Path
-from uuid import UUID, uuid4
+import uuid
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -44,15 +44,15 @@ async def db_session(
 
 
 @pytest_asyncio.fixture()
-async def seeded_assessment(db_session: AsyncSession) -> dict[str, UUID]:
+async def seeded_assessment(db_session: AsyncSession) -> dict[str, uuid.UUID]:
     assessment = SarAssessment(
-        id=uuid4(),
+        id=uuid.uuid4(),
         technology_name="Copilot",
         vendor_name="Microsoft",
         product_name="Microsoft 365 Copilot",
     )
     version = QuestionnaireVersion(
-        id=uuid4(),
+        id=uuid.uuid4(),
         questionnaire_type=QuestionnaireType.TRIAGE.value,
         version="triage-v1",
         status="active",
@@ -82,12 +82,10 @@ async def add_questionnaire_version(
 
 async def add_question_with_options(
     session: AsyncSession,
-    questionnaire_version_id: UUID,
+    questionnaire_version_id: uuid.UUID,
     *,
     risk_domain: str,
-    question_code: str | None = None,
-    section_code: str | None = "general",
-    prompt: str | None = None,
+    question_text: str | None = None,
     why_it_matters: str = "Configuration-defined rationale.",
     is_visible: bool = True,
     is_required: bool = True,
@@ -96,16 +94,17 @@ async def add_question_with_options(
     options: list[tuple[str, RiskLevel, float, str]] | None = None,
 ) -> tuple[QuestionDefinition, list[QuestionOption]]:
     question = QuestionDefinition(
-        id=uuid4(),
+        id=uuid.uuid4(),
         questionnaire_version_id=questionnaire_version_id,
-        question_code=question_code or f"Q-{uuid4().hex[:8]}",
-        section_code=section_code,
-        prompt=prompt or f"{risk_domain} question",
-        response_type=response_type or ("single_select" if options is None or options else "text"),
+        question_code=f"question-{uuid.uuid4()}",
+        question_text=question_text or f"{risk_domain} question",
+        response_type="single_select",
         risk_domain=risk_domain,
         is_visible=is_visible,
         is_required=is_required,
-        question_order=question_order,
+        section_code="triage",
+        question_order=1,
+        is_visible=True,
     )
     question.why_it_matters = why_it_matters
     session.add(question)
@@ -118,10 +117,10 @@ async def add_question_with_options(
     )
     option_models = [
         QuestionOption(
-            id=uuid4(),
-            question_definition_id=question.id,
-            option_code=f"OPTION_{index}",
-            label=label,
+            id=uuid.uuid4(),
+            question_id=question.id,
+            option_code=f"option-{index}",
+            option_label=label,
             risk_weight=risk_weight,
             display_order=index,
             risk_band=risk_level.value,
@@ -137,14 +136,12 @@ async def add_question_with_options(
 
 async def add_question_with_option(
     session: AsyncSession,
-    questionnaire_version_id: UUID,
+    questionnaire_version_id: uuid.UUID,
     *,
     risk_domain: str,
     risk_level: RiskLevel,
     risk_weight: float,
-    question_code: str | None = None,
-    section_code: str | None = "general",
-    prompt: str | None = None,
+    question_text: str | None = None,
     label: str = "Selected",
     why_it_matters: str = "Configuration-defined rationale.",
     risk_signal: str = "Configuration-defined signal.",
@@ -156,9 +153,7 @@ async def add_question_with_option(
         session,
         questionnaire_version_id,
         risk_domain=risk_domain,
-        question_code=question_code,
-        section_code=section_code,
-        prompt=prompt,
+        question_text=question_text,
         why_it_matters=why_it_matters,
         is_visible=is_visible,
         is_required=is_required,
@@ -170,18 +165,22 @@ async def add_question_with_option(
 
 async def add_response(
     session: AsyncSession,
-    assessment_id: UUID,
+    assessment_id: uuid.UUID,
     question: QuestionDefinition,
     option: QuestionOption | None = None,
     *,
-    answer_value: str | None = None,
+    answer_value: dict[str, object] | None = None,
 ) -> AssessmentResponse:
-    canonical_answer_value = option.label if option is not None and answer_value is None else answer_value
+    resolved_answer_value = answer_value
+    if resolved_answer_value is None and option is not None:
+        resolved_answer_value = option.option_label
+
     response = AssessmentResponse(
-        id=uuid4(),
+        id=uuid.uuid4(),
         assessment_id=assessment_id,
-        question_definition_id=question.id,
-        answer_value=canonical_answer_value,
+        question_id=question.id,
+        answer_value=resolved_answer_value,
+        response_status="answered",
     )
     response.selected_option_id = option.id if option else None
     session.add(response)
@@ -225,7 +224,10 @@ async def client(
 
 
 @pytest_asyncio.fixture()
-async def seeded_completed_run(db_session: AsyncSession, seeded_assessment: dict[str, UUID]) -> dict[str, UUID]:
+async def seeded_completed_run(
+    db_session: AsyncSession,
+    seeded_assessment: dict[str, uuid.UUID],
+) -> dict[str, uuid.UUID]:
     question, options = await add_question_with_options(
         db_session,
         seeded_assessment["questionnaire_version_id"],
@@ -239,39 +241,48 @@ async def seeded_completed_run(db_session: AsyncSession, seeded_assessment: dict
     response = await add_response(db_session, seeded_assessment["assessment_id"], question, selected_option)
     generated_at = datetime(2026, 7, 21, 12, 0, tzinfo=timezone.utc)
     run = QuestionAnalysisRun(
-        id=uuid4(),
+        id=uuid.uuid4(),
         assessment_id=seeded_assessment["assessment_id"],
         status=AnalysisRunStatus.COMPLETED.value,
-        scoring_config_version="existing-config-v1",
+        scoring_rule_version="existing-config-v1",
         triage_score=3.0,
         inherent_score=75.0,
         inherent_risk_level=RiskLevel.HIGH.value,
-        overall_risk_level=RiskLevel.HIGH.value,
         executive_summary_text="Stored summary.",
         executive_summary_model="gpt-5.5-test",
         executive_summary_prompt_version="v1",
         executive_summary_input_hash="hash-1",
         executive_summary_generated_at=generated_at,
-        source_text="Derived from SAR triage questions.",
     )
     db_session.add(run)
     await db_session.flush()
     db_session.add(
         QuestionRiskResult(
-            id=uuid4(),
+            id=uuid.uuid4(),
             analysis_run_id=run.id,
             response_id=response.id,
-            question_definition_id=question.id,
-            selected_option_id=selected_option.id,
-            question_text=question.prompt,
             risk_domain=question.risk_domain,
             risk_level=RiskLevel.HIGH.value,
-            risk_weight=selected_option.risk_weight,
-            why_it_matters=question.why_it_matters,
+            risk_score=selected_option.risk_weight,
+            risk_impact=selected_option.why_it_matters,
             risk_signal=selected_option.risk_signal,
-            ai_explanation='Question "Business Continuity question" was answered with "Selected". This matters because Configuration-defined rationale. The selected response indicates High disruption exposure..',
-            ai_confidence=1.0,
-            input_snapshot='{"questionCode":"' + question.question_code + '","selectedResponse":"Selected","riskBand":"high","scoringRuleVersion":"existing-config-v1"}',
+            explanation='Question "Business Continuity question" was answered with "Selected". This matters because Configuration-defined rationale. The selected response indicates High disruption exposure..',
+            confidence=1.0,
+            input_snapshot={
+                "questionCode": question.question_code,
+                "questionId": str(question.id),
+                "questionText": question.question_text,
+                "selectedOptionId": str(selected_option.id),
+                "selectedOptionCode": selected_option.option_code,
+                "selectedOptionLabel": selected_option.option_label,
+                "selectedResponse": selected_option.option_label,
+                "riskWeight": selected_option.risk_weight,
+                "maxRiskWeight": max(option.risk_weight for option in options if option.risk_weight is not None),
+                "whyItMatters": selected_option.why_it_matters,
+                "riskSignal": selected_option.risk_signal,
+                "riskBand": RiskLevel.HIGH.value,
+                "scoringRuleVersion": "existing-config-v1",
+            },
         )
     )
     await db_session.commit()

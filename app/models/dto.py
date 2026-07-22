@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+import uuid
 from uuid import UUID
 
 from pydantic import BaseModel, model_validator
@@ -12,36 +13,35 @@ from app.models.enums import AnalysisRunStatus, ExecutiveSummaryStatus, RiskLeve
 @dataclass(frozen=True)
 class TriagedQuestionResponse:
     question_code: str
-    question_id: UUID
-    response_id: UUID
+    question_id: uuid.UUID
+    response_id: uuid.UUID
+    selected_option_id: uuid.UUID
+    selected_option_code: str
     question_text: str
     risk_domain: str
     is_required: bool
     why_it_matters: str
-    selected_option_id: UUID | None
     selected_option_label: str
     risk_weight: float
     max_risk_weight: float
     risk_level: RiskLevel
     risk_signal: str
     confidence: float
-    resolved_from_answer_value: bool = False
 
 
 @dataclass(frozen=True)
 class TriagedQuestionLoadResult:
     question_responses: list[TriagedQuestionResponse]
     required_triage_question_count: int
-    used_answer_value_resolution: bool = False
-    unresolved_response_ids: list[str] = field(default_factory=list)
+    unresolved_response_ids: list[uuid.UUID] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
 class ComputedQuestionRisk:
     question_code: str
-    response_id: UUID
-    question_definition_id: UUID
-    selected_option_id: UUID | None
+    response_id: uuid.UUID
+    question_definition_id: uuid.UUID | None
+    selected_option_id: uuid.UUID | None
     selected_option_label: str
     question_text: str
     risk_domain: str
@@ -52,25 +52,23 @@ class ComputedQuestionRisk:
     risk_signal: str
     explanation: str
     confidence: float
-    input_snapshot: str
+    input_snapshot: dict[str, object]
 
 
 @dataclass(frozen=True)
 class StoredAnalysisSnapshot:
-    analysis_run_id: str
+    analysis_run_id: uuid.UUID
     status: AnalysisRunStatus
     triage_score: float | None
     inherent_score: float | None
-    overall_risk_level: RiskLevel
+    inherent_risk_level: RiskLevel
     executive_summary_status: ExecutiveSummaryStatus
     executive_summary_text: str | None
     executive_summary_model: str | None
     executive_summary_prompt_version: str | None
     executive_summary_input_hash: str | None
     executive_summary_generated_at: datetime | None
-    limitation_summary: str | None
-    failure_reason: str | None
-    source_text: str
+    error_summary: str | None
     question_results: list[ComputedQuestionRisk]
 
 
@@ -82,8 +80,8 @@ class TopRiskDriverState:
 
 @dataclass(frozen=True)
 class InherentRiskScreenState:
-    assessment_id: UUID
-    analysis_run_id: UUID | None
+    assessment_id: uuid.UUID
+    analysis_run_id: uuid.UUID | None
     status: AnalysisRunStatus
     inherent_risk_level: RiskLevel
     high_risk_question_count: int
@@ -91,7 +89,6 @@ class InherentRiskScreenState:
     executive_summary_status: ExecutiveSummaryStatus
     executive_summary_text: str | None
     executive_summary_generated_at: datetime | None
-    source_text: str
 
 
 class InherentRiskValueDTO(BaseModel):
