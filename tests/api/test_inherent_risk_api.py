@@ -153,8 +153,8 @@ async def test_get_returns_latest_successful_run_when_failed_run_exists(client, 
 
     created = (
         await client.post(
-        f"/api/v1/assessments/{seeded_assessment['assessment_id']}/analysis-runs",
-        json={"force": False},
+            f"/api/v1/assessments/{seeded_assessment['assessment_id']}/analysis-runs",
+            json={"force": False},
         )
     ).json()
 

@@ -166,8 +166,6 @@ class AIAnalysisQuestionRowDTO(BaseModel):
     riskScore: float | None
     riskSignal: str | None
     whyItMatters: str | None
-    aiExplanation: str | None
-    confidence: float | None
     reviewerRemarks: str | None
 
 
