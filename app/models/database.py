@@ -7,6 +7,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
+    JSON,
     Index,
     Integer,
     JSON,
@@ -14,6 +15,7 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
+    Uuid,
     UniqueConstraint,
     func,
 )
@@ -83,6 +85,14 @@ class QuestionnaireVersion(Base):
     version: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    @property
+    def is_active(self) -> bool:
+        return self.status == "active"
+
+    @is_active.setter
+    def is_active(self, value: bool) -> None:
+        self.status = "active" if value else "inactive"
 
 
 class QuestionDefinition(Base):

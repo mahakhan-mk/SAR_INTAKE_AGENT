@@ -9,6 +9,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.database import AssessmentResponse, QuestionDefinition, QuestionOption, QuestionnaireVersion, SarAssessment
 from app.models.dto import TriagedQuestionLoadResult, TriagedQuestionResponse
+from app.models.intake import (
+    IntakeHeaderRecord,
+    IntakeOverviewRecord,
+    IntakeQuestionRecord,
+    IntakeSectionRecord,
+    IntakeTriageQuestionRecord,
+)
 from app.models.enums import QuestionnaireType, RiskLevel
 
 SCORABLE_RESPONSE_TYPES = ("single_select", "multi_select")

@@ -27,7 +27,7 @@ class AnalysisRepository:
             await session.execute(
             select(QuestionAnalysisRun)
             .where(
-                QuestionAnalysisRun.assessment_id == assessment_id,
+                QuestionAnalysisRun.assessment_id == self._coerce_uuid(assessment_id),
                 QuestionAnalysisRun.status.in_(SUCCESSFUL_RUN_STATUSES),
             )
             .order_by(QuestionAnalysisRun.created_at.desc(), QuestionAnalysisRun.id.desc())
@@ -102,7 +102,7 @@ class AnalysisRepository:
     ) -> QuestionAnalysisRun:
         now = datetime.now(timezone.utc)
         run = QuestionAnalysisRun(
-            assessment_id=assessment_id,
+            assessment_id=self._coerce_uuid(assessment_id),
             status=status.value,
             scoring_rule_version=scoring_rule_version,
             intake_score=intake_score,
@@ -123,7 +123,7 @@ class AnalysisRepository:
         session: AsyncSession,
         analysis_run_id: uuid.UUID,
     ) -> QuestionAnalysisRun | None:
-        return await session.get(QuestionAnalysisRun, analysis_run_id)
+        return await session.get(QuestionAnalysisRun, self._coerce_uuid(analysis_run_id))
 
     async def update_executive_summary(
         self,
