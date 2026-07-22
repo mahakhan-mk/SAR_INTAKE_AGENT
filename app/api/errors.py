@@ -6,6 +6,15 @@ class AssessmentNotFoundError(Exception):
     pass
 
 
+class AnalysisRunNotFoundError(Exception):
+    pass
+
+
+class AnalysisRunStatusConflictError(Exception):
+    def __init__(self, status: str) -> None:
+        self.status = status
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     from app.services.intake_service import (
         IntakeQuestionHiddenError,
@@ -19,6 +28,23 @@ def register_exception_handlers(app: FastAPI) -> None:
         exc: AssessmentNotFoundError,
     ) -> JSONResponse:
         return JSONResponse(status_code=404, content={"detail": "Assessment not found."})
+
+    @app.exception_handler(AnalysisRunNotFoundError)
+    async def handle_analysis_run_not_found(
+        request: Request,
+        exc: AnalysisRunNotFoundError,
+    ) -> JSONResponse:
+        return JSONResponse(status_code=404, content={"detail": "Analysis run not found."})
+
+    @app.exception_handler(AnalysisRunStatusConflictError)
+    async def handle_analysis_run_status_conflict(
+        request: Request,
+        exc: AnalysisRunStatusConflictError,
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=409,
+            content={"detail": f"Analysis run status '{exc.status}' does not allow executive summary generation."},
+        )
 
     @app.exception_handler(IntakeQuestionNotFoundError)
     async def handle_intake_question_not_found(

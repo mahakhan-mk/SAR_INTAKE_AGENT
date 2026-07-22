@@ -40,12 +40,10 @@ async def create_analysis_run(
     )
 
 
-@router.post(
-    "/{assessment_id}/inherent-risk/executive-summary",
-    response_model=ExecutiveSummaryGenerateResponseDTO,
-)
+@router.post("/{assessment_id}/analysis-runs/{analysis_run_id}/executive-summary", response_model=ExecutiveSummaryGenerateResponseDTO)
 async def generate_executive_summary(
     assessment_id: UUID,
+    analysis_run_id: UUID,
     payload: ExecutiveSummaryGenerateRequestDTO,
     session: AsyncSession = Depends(get_session),
     service: ExecutiveSummaryService = Depends(get_executive_summary_service),
@@ -53,5 +51,6 @@ async def generate_executive_summary(
     return await service.generate(
         session=session,
         assessment_id=assessment_id,
+        analysis_run_id=analysis_run_id,
         force=payload.force,
     )

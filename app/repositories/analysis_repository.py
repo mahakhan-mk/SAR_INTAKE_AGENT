@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 import uuid
+from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -37,6 +38,35 @@ class AnalysisRepository:
         if run is None:
             return None
 
+        return await self._build_snapshot(session, run)
+
+    async def get_analysis_run_for_assessment(
+        self,
+        session: AsyncSession,
+        assessment_id: uuid.UUID,
+        analysis_run_id: uuid.UUID,
+    ) -> QuestionAnalysisRun | None:
+        return (
+            await session.execute(
+                select(QuestionAnalysisRun).where(
+                    QuestionAnalysisRun.id == self._coerce_uuid(analysis_run_id),
+                    QuestionAnalysisRun.assessment_id == self._coerce_uuid(assessment_id),
+                )
+            )
+        ).scalars().first()
+
+    async def get_snapshot_for_run(
+        self,
+        session: AsyncSession,
+        run: QuestionAnalysisRun,
+    ) -> StoredAnalysisSnapshot:
+        return await self._build_snapshot(session, run)
+
+    async def _build_snapshot(
+        self,
+        session: AsyncSession,
+        run: QuestionAnalysisRun,
+    ) -> StoredAnalysisSnapshot:
         results = (
             await session.execute(
             select(QuestionRiskResult)
@@ -157,6 +187,10 @@ class AnalysisRepository:
 
         await session.flush()
         return run
+
+    @staticmethod
+    def _coerce_uuid(value: UUID | str) -> UUID:
+        return value if isinstance(value, UUID) else UUID(value)
 
     @staticmethod
     def _extract_selected_response(input_snapshot: object | None) -> str:

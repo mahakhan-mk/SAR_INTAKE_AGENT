@@ -19,7 +19,7 @@ Implemented endpoints:
 
 - `GET /api/v1/assessments/{assessment_id}/inherent-risk`
 - `POST /api/v1/assessments/{assessment_id}/analysis-runs`
-- `POST /api/v1/assessments/{assessment_id}/inherent-risk/executive-summary`
+- `POST /api/v1/assessments/{assessment_id}/analysis-runs/{analysis_run_id}/executive-summary`
 
 Implemented scoring rule:
 

@@ -30,13 +30,13 @@ assessment
   -> API response
 ```
 
-Executive-summary generation reuses the latest successful analysis run:
+Executive-summary generation targets an explicit existing analysis run:
 
 ```text
 question_analysis_runs + question_risk_results
   -> ExecutiveSummaryService._build_input_payload()
   -> AzureExecutiveSummaryClient
-  -> question_analysis_runs.executive_summary*
+  -> same question_analysis_runs row executive_summary*
 ```
 
 ## Triage Question Selection
@@ -102,15 +102,23 @@ Each successful deterministic run persists:
 
 ## Executive Summary Flow
 
-`POST /api/v1/assessments/{assessment_id}/inherent-risk/executive-summary` uses the latest successful analysis snapshot. If none exists, it first creates one through the inherent-risk service.
+`POST /api/v1/assessments/{assessment_id}/analysis-runs/{analysis_run_id}/executive-summary` targets a specific existing run. The service loads `question_analysis_runs` by both `assessment_id` and `id`.
 
 The summary flow:
 
+- accepts UUID path parameters `assessment_id` and `analysis_run_id`
+- returns `404` when the assessment/run pair does not match a stored run
+- returns `409` when the targeted run status is `queued`, `running`, or `failed`
+- allows only `completed` and `completed_with_limitations`
 - builds a deterministic input payload from assessment context, inherent-risk level, high-risk count, top risk drivers, material questions, and material limitations
 - hashes that payload and reuses the stored summary when the hash matches and `force = false`
 - loads the YAML prompt from `app/prompts/executive_summary.yaml`
-- calls Azure OpenAI only to explain the deterministic result
-- stores summary text and summary metadata on `question_analysis_runs`
+- reuses the existing summary generation flow and calls Azure OpenAI only to explain the deterministic result
+- stores summary text and summary metadata on the same `question_analysis_runs` row using `executive_summary`, `executive_summary_generated_at`, `executive_summary_model`, `executive_summary_prompt_version`, and `executive_summary_input_hash`
+- does not create a new analysis run
+- does not recalculate scores
+- does not modify responses
+- does not modify `question_risk_results`
 
 If Azure OpenAI times out, fails, or returns invalid structured output, the service persists a fallback summary, marks the summary status as `fallback`, and keeps the run in `completed_with_limitations`.
 
@@ -123,3 +131,4 @@ Known dependency:
 - [migrations/20260721_add_question_analysis_run_executive_summary_metadata.py](/C:/Users/Lenovo/Documents/SAR_INTAKE_AGENT/migrations/20260721_add_question_analysis_run_executive_summary_metadata.py) only adds executive-summary metadata columns to `question_analysis_runs`
 - it assumes the base table already exists
 - it does not create the full schema from `db.txt`
+- the executive-summary route change itself required no new migration

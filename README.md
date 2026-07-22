@@ -6,7 +6,7 @@ The current FastAPI application exposes the inherent-risk workflow for SAR asses
 
 - `GET /api/v1/assessments/{assessment_id}/inherent-risk`
 - `POST /api/v1/assessments/{assessment_id}/analysis-runs`
-- `POST /api/v1/assessments/{assessment_id}/inherent-risk/executive-summary`
+- `POST /api/v1/assessments/{assessment_id}/analysis-runs/{analysis_run_id}/executive-summary`
 
 `db.txt` is the schema source of truth. The maintained runtime target is PostgreSQL schema `kpmg_sar`.
 
@@ -23,7 +23,7 @@ The current FastAPI application exposes the inherent-risk workflow for SAR asses
   - `AZURE_OPENAI_API_VERSION`
   - `AZURE_OPENAI_TIMEOUT_SECONDS` (optional, defaults to `30`)
 
-The executive-summary flow also depends on the metadata columns added by [migrations/20260721_add_question_analysis_run_executive_summary_metadata.py](/C:/Users/Lenovo/Documents/SAR_INTAKE_AGENT/migrations/20260721_add_question_analysis_run_executive_summary_metadata.py). Apply the base PostgreSQL schema from `db.txt` first, then run that migration for databases created before July 21, 2026.
+This executive-summary API change did not require a new database migration. It uses the existing `question_analysis_runs` columns `executive_summary`, `executive_summary_generated_at`, `executive_summary_model`, `executive_summary_prompt_version`, and `executive_summary_input_hash`. For databases created before July 21, 2026, apply [migrations/20260721_add_question_analysis_run_executive_summary_metadata.py](/C:/Users/Lenovo/Documents/SAR_INTAKE_AGENT/migrations/20260721_add_question_analysis_run_executive_summary_metadata.py) after the base PostgreSQL schema from `db.txt`.
 
 `app.database.init_db()` creates mapped tables, but it is not the authoritative schema-management path for PostgreSQL because `db.txt` includes the canonical schema, constraints, and trigger definitions.
 
