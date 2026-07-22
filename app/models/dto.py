@@ -2,11 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-<<<<<<< HEAD
 import uuid
-=======
 from uuid import UUID
->>>>>>> origin/main
 
 from pydantic import BaseModel, model_validator
 
@@ -16,23 +13,14 @@ from app.models.enums import AnalysisRunStatus, ExecutiveSummaryStatus, RiskLeve
 @dataclass(frozen=True)
 class TriagedQuestionResponse:
     question_code: str
-<<<<<<< HEAD
     question_id: uuid.UUID
     response_id: uuid.UUID
     selected_option_id: uuid.UUID
     selected_option_code: str
-=======
-    question_id: UUID
-    response_id: UUID
->>>>>>> origin/main
     question_text: str
     risk_domain: str
     is_required: bool
     why_it_matters: str
-<<<<<<< HEAD
-=======
-    selected_option_id: UUID | None
->>>>>>> origin/main
     selected_option_label: str
     risk_weight: float
     max_risk_weight: float
@@ -51,15 +39,9 @@ class TriagedQuestionLoadResult:
 @dataclass(frozen=True)
 class ComputedQuestionRisk:
     question_code: str
-<<<<<<< HEAD
     response_id: uuid.UUID
     question_definition_id: uuid.UUID | None
     selected_option_id: uuid.UUID | None
-=======
-    response_id: UUID
-    question_definition_id: UUID
-    selected_option_id: UUID | None
->>>>>>> origin/main
     selected_option_label: str
     question_text: str
     risk_domain: str
@@ -98,13 +80,8 @@ class TopRiskDriverState:
 
 @dataclass(frozen=True)
 class InherentRiskScreenState:
-<<<<<<< HEAD
     assessment_id: uuid.UUID
     analysis_run_id: uuid.UUID | None
-=======
-    assessment_id: UUID
-    analysis_run_id: UUID | None
->>>>>>> origin/main
     status: AnalysisRunStatus
     inherent_risk_level: RiskLevel
     high_risk_question_count: int
