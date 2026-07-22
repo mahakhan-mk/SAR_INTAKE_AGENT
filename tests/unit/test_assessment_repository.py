@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import pytest
+
 from app.models.enums import RiskLevel
 from app.repositories.assessment_repository import AssessmentRepository
 from tests.conftest import add_question_with_option, add_response
 
+pytestmark = pytest.mark.asyncio
 
-def test_load_active_triage_question_responses_uses_question_code_and_skips_invisible_questions(
+
+async def test_load_active_triage_question_responses_uses_question_code_and_skips_invisible_questions(
     db_session,
     seeded_assessment,
 ):
-    visible_question, visible_option = add_question_with_option(
+    visible_question, visible_option = await add_question_with_option(
         db_session,
         seeded_assessment["questionnaire_version_id"],
         risk_domain="Security",
@@ -20,7 +24,7 @@ def test_load_active_triage_question_responses_uses_question_code_and_skips_invi
         question_order=None,
         is_visible=True,
     )
-    invisible_question, invisible_option = add_question_with_option(
+    invisible_question, invisible_option = await add_question_with_option(
         db_session,
         seeded_assessment["questionnaire_version_id"],
         risk_domain="Privacy",
@@ -32,10 +36,10 @@ def test_load_active_triage_question_responses_uses_question_code_and_skips_invi
         is_visible=False,
     )
 
-    add_response(db_session, seeded_assessment["assessment_id"], visible_question, visible_option)
-    add_response(db_session, seeded_assessment["assessment_id"], invisible_question, invisible_option)
+    await add_response(db_session, seeded_assessment["assessment_id"], visible_question, visible_option)
+    await add_response(db_session, seeded_assessment["assessment_id"], invisible_question, invisible_option)
 
-    result = AssessmentRepository().load_active_triage_question_responses(
+    result = await AssessmentRepository().load_active_triage_question_responses(
         db_session,
         seeded_assessment["assessment_id"],
     )
@@ -45,10 +49,10 @@ def test_load_active_triage_question_responses_uses_question_code_and_skips_invi
     assert [item.question_id for item in result.question_responses] == [visible_question.id]
 
 
-def test_load_active_triage_question_responses_returns_empty_when_no_active_version(db_session):
+async def test_load_active_triage_question_responses_returns_empty_when_no_active_version(db_session):
     repository = AssessmentRepository()
 
-    result = repository.load_active_triage_question_responses(db_session, "missing-assessment-id")
+    result = await repository.load_active_triage_question_responses(db_session, "missing-assessment-id")
 
     assert result.question_responses == []
     assert result.required_triage_question_count == 0

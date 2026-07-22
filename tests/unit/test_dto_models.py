@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from uuid import UUID
+
 import pytest
 from pydantic import ValidationError
 
@@ -16,7 +18,7 @@ from app.models.dto import (
 
 def test_intake_overview_response_dto_serializes_expected_shape():
     dto = IntakeOverviewResponseDTO(
-        assessmentId="assessment-1",
+        assessmentId="00000000-0000-0000-0000-000000000001",
         header=IntakeHeaderDTO(
             technologyName="Microsoft 365 Copilot",
             sourceSystem="ServiceNow",
@@ -28,7 +30,7 @@ def test_intake_overview_response_dto_serializes_expected_shape():
                 title="General",
                 questions=[
                     IntakeQuestionDTO(
-                        questionId="question-1",
+                        questionId="00000000-0000-0000-0000-000000000002",
                         questionCode="GEN-001",
                         label="What is the product name?",
                         answer="Microsoft 365 Copilot",
@@ -41,7 +43,7 @@ def test_intake_overview_response_dto_serializes_expected_shape():
         ],
         triage=[
             IntakeTriageQuestionDTO(
-                questionId="triage-1",
+                questionId="00000000-0000-0000-0000-000000000003",
                 questionCode="TRIAGE-001",
                 label="Does the tool handle sensitive data?",
                 answer="Yes",
@@ -49,8 +51,8 @@ def test_intake_overview_response_dto_serializes_expected_shape():
         ],
     )
 
-    assert dto.model_dump() == {
-        "assessmentId": "assessment-1",
+    assert dto.model_dump(mode="json") == {
+        "assessmentId": "00000000-0000-0000-0000-000000000001",
         "header": {
             "technologyName": "Microsoft 365 Copilot",
             "sourceSystem": "ServiceNow",
@@ -62,7 +64,7 @@ def test_intake_overview_response_dto_serializes_expected_shape():
                 "title": "General",
                 "questions": [
                     {
-                        "questionId": "question-1",
+                        "questionId": "00000000-0000-0000-0000-000000000002",
                         "questionCode": "GEN-001",
                         "label": "What is the product name?",
                         "answer": "Microsoft 365 Copilot",
@@ -74,9 +76,9 @@ def test_intake_overview_response_dto_serializes_expected_shape():
             }
         ],
         "triage": [
-            {
-                "questionId": "triage-1",
-                "questionCode": "TRIAGE-001",
+                {
+                    "questionId": "00000000-0000-0000-0000-000000000003",
+                    "questionCode": "TRIAGE-001",
                 "label": "Does the tool handle sensitive data?",
                 "answer": "Yes",
             }
@@ -92,9 +94,9 @@ def test_intake_question_update_request_rejects_when_both_fields_are_omitted():
 
 
 def test_intake_question_update_request_accepts_selected_option_only():
-    dto = IntakeQuestionUpdateRequestDTO(selectedOptionId="option-1")
+    dto = IntakeQuestionUpdateRequestDTO(selectedOptionId="00000000-0000-0000-0000-000000000001")
 
-    assert dto.selectedOptionId == "option-1"
+    assert dto.selectedOptionId == UUID("00000000-0000-0000-0000-000000000001")
     assert dto.answerValue is None
     assert dto.model_fields_set == {"selectedOptionId"}
 
@@ -117,13 +119,13 @@ def test_intake_question_update_request_accepts_both_fields_as_explicit_null():
 
 def test_intake_question_update_response_dto_serializes_expected_shape():
     dto = IntakeQuestionUpdateResponseDTO(
-        questionId="question-1",
-        selectedOptionId="option-1",
+        questionId="00000000-0000-0000-0000-000000000004",
+        selectedOptionId="00000000-0000-0000-0000-000000000005",
         answerValue="Yes",
     )
 
-    assert dto.model_dump() == {
-        "questionId": "question-1",
-        "selectedOptionId": "option-1",
+    assert dto.model_dump(mode="json") == {
+        "questionId": "00000000-0000-0000-0000-000000000004",
+        "selectedOptionId": "00000000-0000-0000-0000-000000000005",
         "answerValue": "Yes",
     }

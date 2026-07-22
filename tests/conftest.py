@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -44,18 +44,18 @@ async def db_session(
 
 
 @pytest_asyncio.fixture()
-async def seeded_assessment(db_session: AsyncSession) -> dict[str, str]:
+async def seeded_assessment(db_session: AsyncSession) -> dict[str, UUID]:
     assessment = SarAssessment(
-        id=str(uuid4()),
+        id=uuid4(),
         technology_name="Copilot",
         vendor_name="Microsoft",
         product_name="Microsoft 365 Copilot",
     )
     version = QuestionnaireVersion(
-        id=str(uuid4()),
+        id=uuid4(),
         questionnaire_type=QuestionnaireType.TRIAGE.value,
         version="triage-v1",
-        is_active=True,
+        status="active",
     )
     db_session.add_all([assessment, version])
     await db_session.commit()
@@ -70,10 +70,10 @@ async def add_questionnaire_version(
     is_active: bool = True,
 ) -> QuestionnaireVersion:
     questionnaire_version = QuestionnaireVersion(
-        id=str(uuid4()),
+        id=uuid4(),
         questionnaire_type=questionnaire_type,
         version=version,
-        is_active=is_active,
+        status="active" if is_active else "inactive",
     )
     session.add(questionnaire_version)
     await session.commit()
@@ -82,7 +82,7 @@ async def add_questionnaire_version(
 
 async def add_question_with_options(
     session: AsyncSession,
-    questionnaire_version_id: str,
+    questionnaire_version_id: UUID,
     *,
     risk_domain: str,
     question_code: str | None = None,
@@ -92,32 +92,40 @@ async def add_question_with_options(
     is_visible: bool = True,
     is_required: bool = True,
     question_order: int | None = 1,
+    response_type: str | None = None,
     options: list[tuple[str, RiskLevel, float, str]] | None = None,
 ) -> tuple[QuestionDefinition, list[QuestionOption]]:
     question = QuestionDefinition(
-        id=str(uuid4()),
+        id=uuid4(),
         questionnaire_version_id=questionnaire_version_id,
         question_code=question_code or f"Q-{uuid4().hex[:8]}",
         section_code=section_code,
         prompt=prompt or f"{risk_domain} question",
-        why_it_matters=why_it_matters,
+        response_type=response_type or ("single_select" if options is None or options else "text"),
         risk_domain=risk_domain,
         is_visible=is_visible,
         is_required=is_required,
         question_order=question_order,
     )
+    question.why_it_matters = why_it_matters
     session.add(question)
     await session.flush()
 
-    resolved_options = options or [("Selected", RiskLevel.LOW, 0.0, "Configuration-defined signal.")]
+    resolved_options = (
+        [("Selected", RiskLevel.LOW, 0.0, "Configuration-defined signal.")]
+        if options is None
+        else options
+    )
     option_models = [
         QuestionOption(
-            id=str(uuid4()),
+            id=uuid4(),
             question_definition_id=question.id,
+            option_code=f"OPTION_{index}",
             label=label,
             risk_weight=risk_weight,
             display_order=index,
             risk_band=risk_level.value,
+            why_it_matters=why_it_matters,
             risk_signal=risk_signal,
         )
         for index, (label, risk_level, risk_weight, risk_signal) in enumerate(resolved_options, start=1)
@@ -129,7 +137,7 @@ async def add_question_with_options(
 
 async def add_question_with_option(
     session: AsyncSession,
-    questionnaire_version_id: str,
+    questionnaire_version_id: UUID,
     *,
     risk_domain: str,
     risk_level: RiskLevel,
@@ -162,19 +170,20 @@ async def add_question_with_option(
 
 async def add_response(
     session: AsyncSession,
-    assessment_id: str,
+    assessment_id: UUID,
     question: QuestionDefinition,
     option: QuestionOption | None = None,
     *,
     answer_value: str | None = None,
 ) -> AssessmentResponse:
+    canonical_answer_value = option.label if option is not None and answer_value is None else answer_value
     response = AssessmentResponse(
-        id=str(uuid4()),
+        id=uuid4(),
         assessment_id=assessment_id,
         question_definition_id=question.id,
-        selected_option_id=option.id if option else None,
-        answer_value=answer_value,
+        answer_value=canonical_answer_value,
     )
+    response.selected_option_id = option.id if option else None
     session.add(response)
     await session.commit()
     return response
@@ -216,7 +225,7 @@ async def client(
 
 
 @pytest_asyncio.fixture()
-async def seeded_completed_run(db_session: AsyncSession, seeded_assessment: dict[str, str]) -> dict[str, str]:
+async def seeded_completed_run(db_session: AsyncSession, seeded_assessment: dict[str, UUID]) -> dict[str, UUID]:
     question, options = await add_question_with_options(
         db_session,
         seeded_assessment["questionnaire_version_id"],
@@ -230,7 +239,7 @@ async def seeded_completed_run(db_session: AsyncSession, seeded_assessment: dict
     response = await add_response(db_session, seeded_assessment["assessment_id"], question, selected_option)
     generated_at = datetime(2026, 7, 21, 12, 0, tzinfo=timezone.utc)
     run = QuestionAnalysisRun(
-        id=str(uuid4()),
+        id=uuid4(),
         assessment_id=seeded_assessment["assessment_id"],
         status=AnalysisRunStatus.COMPLETED.value,
         scoring_config_version="existing-config-v1",
@@ -249,7 +258,7 @@ async def seeded_completed_run(db_session: AsyncSession, seeded_assessment: dict
     await db_session.flush()
     db_session.add(
         QuestionRiskResult(
-            id=str(uuid4()),
+            id=uuid4(),
             analysis_run_id=run.id,
             response_id=response.id,
             question_definition_id=question.id,

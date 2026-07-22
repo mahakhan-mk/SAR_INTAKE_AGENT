@@ -1,47 +1,55 @@
 
 from __future__ import annotations
 
+from uuid import UUID
+
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.database import AssessmentResponse
 
 
 class ResponseRepository:
-    def get_response(
+    async def get_response(
         self,
-        session: Session,
-        assessment_id: str,
-        question_definition_id: str,
+        session: AsyncSession,
+        assessment_id: UUID | str,
+        question_definition_id: UUID | str,
     ) -> AssessmentResponse | None:
-        return session.execute(
-            select(AssessmentResponse).where(
-                AssessmentResponse.assessment_id == assessment_id,
-                AssessmentResponse.question_definition_id == question_definition_id,
+        return (
+            await session.execute(
+                select(AssessmentResponse).where(
+                    AssessmentResponse.assessment_id == self._coerce_uuid(assessment_id),
+                    AssessmentResponse.question_definition_id == self._coerce_uuid(question_definition_id),
+                )
             )
         ).scalars().first()
 
-    def upsert_response(
+    async def upsert_response(
         self,
-        session: Session,
+        session: AsyncSession,
         *,
-        assessment_id: str,
-        question_definition_id: str,
-        selected_option_id: str | None,
+        assessment_id: UUID | str,
+        question_definition_id: UUID | str,
+        selected_option_id: UUID | str | None,
         answer_value: str | None,
     ) -> AssessmentResponse:
-        response = self.get_response(session, assessment_id, question_definition_id)
+        response = await self.get_response(session, assessment_id, question_definition_id)
         if response is None:
             response = AssessmentResponse(
-                assessment_id=assessment_id,
-                question_definition_id=question_definition_id,
-                selected_option_id=selected_option_id,
+                assessment_id=self._coerce_uuid(assessment_id),
+                question_definition_id=self._coerce_uuid(question_definition_id),
                 answer_value=answer_value,
             )
+            response.selected_option_id = self._coerce_uuid(selected_option_id) if selected_option_id is not None else None
             session.add(response)
         else:
-            response.selected_option_id = selected_option_id
             response.answer_value = answer_value
+            response.selected_option_id = self._coerce_uuid(selected_option_id) if selected_option_id is not None else None
 
-        session.flush()
+        await session.flush()
         return response
+
+    @staticmethod
+    def _coerce_uuid(value: UUID | str) -> UUID:
+        return value if isinstance(value, UUID) else UUID(value)

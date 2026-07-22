@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from uuid import UUID
 
 from pydantic import BaseModel, model_validator
 
@@ -11,13 +12,13 @@ from app.models.enums import AnalysisRunStatus, ExecutiveSummaryStatus, RiskLeve
 @dataclass(frozen=True)
 class TriagedQuestionResponse:
     question_code: str
-    question_id: str
-    response_id: str
+    question_id: UUID
+    response_id: UUID
     question_text: str
     risk_domain: str
     is_required: bool
     why_it_matters: str
-    selected_option_id: str | None
+    selected_option_id: UUID | None
     selected_option_label: str
     risk_weight: float
     max_risk_weight: float
@@ -38,9 +39,9 @@ class TriagedQuestionLoadResult:
 @dataclass(frozen=True)
 class ComputedQuestionRisk:
     question_code: str
-    response_id: str
-    question_definition_id: str
-    selected_option_id: str | None
+    response_id: UUID
+    question_definition_id: UUID
+    selected_option_id: UUID | None
     selected_option_label: str
     question_text: str
     risk_domain: str
@@ -81,8 +82,8 @@ class TopRiskDriverState:
 
 @dataclass(frozen=True)
 class InherentRiskScreenState:
-    assessment_id: str
-    analysis_run_id: str | None
+    assessment_id: UUID
+    analysis_run_id: UUID | None
     status: AnalysisRunStatus
     inherent_risk_level: RiskLevel
     high_risk_question_count: int
@@ -117,8 +118,8 @@ class LinksDTO(BaseModel):
 
 
 class InherentRiskResponseDTO(BaseModel):
-    assessmentId: str
-    analysisRunId: str | None
+    assessmentId: UUID
+    analysisRunId: UUID | None
     status: AnalysisRunStatus
     inherentRisk: InherentRiskValueDTO
     topRiskDrivers: list[TopRiskDriverDTO]
@@ -131,7 +132,7 @@ class AnalysisRunCreateRequestDTO(BaseModel):
 
 
 class AnalysisRunCreateResponseDTO(BaseModel):
-    analysisRunId: str
+    analysisRunId: UUID | str
     status: AnalysisRunStatus
 
 
@@ -146,8 +147,8 @@ class ExecutiveSummaryGenerateEnvelopeDTO(BaseModel):
 
 
 class ExecutiveSummaryGenerateResponseDTO(BaseModel):
-    assessmentId: str
-    analysisRunId: str
+    assessmentId: UUID
+    analysisRunId: UUID
     executiveSummary: ExecutiveSummaryGenerateEnvelopeDTO
 
 
@@ -158,7 +159,7 @@ class IntakeHeaderDTO(BaseModel):
 
 
 class IntakeQuestionDTO(BaseModel):
-    questionId: str
+    questionId: UUID
     questionCode: str
     label: str
     answer: str | None
@@ -174,21 +175,21 @@ class IntakeSectionDTO(BaseModel):
 
 
 class IntakeTriageQuestionDTO(BaseModel):
-    questionId: str
+    questionId: UUID
     questionCode: str
     label: str
     answer: str | None
 
 
 class IntakeOverviewResponseDTO(BaseModel):
-    assessmentId: str
+    assessmentId: UUID
     header: IntakeHeaderDTO
     sections: list[IntakeSectionDTO]
     triage: list[IntakeTriageQuestionDTO]
 
 
 class IntakeQuestionUpdateRequestDTO(BaseModel):
-    selectedOptionId: str | None = None
+    selectedOptionId: UUID | None = None
     answerValue: str | None = None
 
     @model_validator(mode="after")
@@ -199,6 +200,6 @@ class IntakeQuestionUpdateRequestDTO(BaseModel):
 
 
 class IntakeQuestionUpdateResponseDTO(BaseModel):
-    questionId: str
-    selectedOptionId: str | None
+    questionId: UUID
+    selectedOptionId: UUID | None
     answerValue: str | None

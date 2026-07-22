@@ -11,8 +11,8 @@ from app.models.dto import (
 class InherentRiskAssembler:
     def to_dto(self, state: InherentRiskScreenState) -> InherentRiskResponseDTO:
         return InherentRiskResponseDTO(
-            assessmentId=state.assessment_id,
-            analysisRunId=state.analysis_run_id,
+            assessmentId=str(state.assessment_id),
+            analysisRunId=str(state.analysis_run_id) if state.analysis_run_id is not None else None,
             status=state.status,
             inherentRisk=InherentRiskValueDTO(
                 level=state.inherent_risk_level,

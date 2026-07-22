@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import json
+from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,31 +23,48 @@ INTAKE_QUESTIONNAIRE_TYPE = "intake"
 
 
 class AssessmentRepository:
-    async def get_assessment(self, session: AsyncSession, assessment_id: str) -> SarAssessment | None:
-        return await session.get(SarAssessment, assessment_id)
+    async def get_assessment(self, session: AsyncSession, assessment_id: UUID | str) -> SarAssessment | None:
+        return await session.get(SarAssessment, self._coerce_uuid(assessment_id))
 
-    async def get_question(self, session: AsyncSession, question_id: str) -> QuestionDefinition | None:
-        return await session.get(QuestionDefinition, question_id)
+    async def get_question(self, session: AsyncSession, question_id: UUID | str) -> QuestionDefinition | None:
+        return await session.get(QuestionDefinition, self._coerce_uuid(question_id))
 
     async def get_question_option(
         self,
         session: AsyncSession,
-        question_id: str,
-        option_id: str,
+        question_id: UUID | str,
+        option_id: UUID | str,
     ) -> QuestionOption | None:
         return (
             await session.execute(
                 select(QuestionOption).where(
-                    QuestionOption.id == option_id,
-                    QuestionOption.question_definition_id == question_id,
+                    QuestionOption.id == self._coerce_uuid(option_id),
+                    QuestionOption.question_definition_id == self._coerce_uuid(question_id),
                 )
+            )
+        ).scalars().first()
+
+    async def get_question_option_by_label(
+        self,
+        session: AsyncSession,
+        question_id: UUID | str,
+        option_label: str,
+    ) -> QuestionOption | None:
+        return (
+            await session.execute(
+                select(QuestionOption)
+                .where(
+                    QuestionOption.question_definition_id == self._coerce_uuid(question_id),
+                    QuestionOption.label == option_label,
+                )
+                .order_by(QuestionOption.display_order.asc(), QuestionOption.id.asc())
             )
         ).scalars().first()
 
     async def load_intake_overview(
         self,
         session: AsyncSession,
-        assessment_id: str,
+        assessment_id: UUID | str,
     ) -> IntakeOverviewRecord | None:
         assessment = await self.get_assessment(session, assessment_id)
         if assessment is None:
@@ -83,6 +102,7 @@ class AssessmentRepository:
             self._build_triage_question_record(
                 question=question,
                 response=responses_by_question_id.get(question.id),
+                options=options_by_question_id.get(question.id, []),
                 option_by_id=option_by_id,
             )
             for question in triage_questions
@@ -102,7 +122,7 @@ class AssessmentRepository:
     async def load_active_triage_question_responses(
         self,
         session: AsyncSession,
-        assessment_id: str,
+        assessment_id: UUID | str,
     ) -> TriagedQuestionLoadResult:
         version = await self._get_active_questionnaire_version(session, QuestionnaireType.TRIAGE.value)
 
@@ -141,43 +161,40 @@ class AssessmentRepository:
             if question is None:
                 continue
 
-            selected_option = None
-            resolved_from_answer_value = False
-
-            if response.selected_option_id:
-                selected_option = option_by_id.get(response.selected_option_id)
-            elif response.answer_value is not None:
-                selected_option = next(
-                    (
-                        option
-                        for option in options_by_question.get(question.id, [])
-                        if option.label == response.answer_value
-                    ),
-                    None,
-                )
-                resolved_from_answer_value = selected_option is not None
+            question_options = options_by_question.get(question.id, [])
+            selected_option = self._resolve_selected_option(
+                response=response,
+                options=question_options,
+                option_by_id=option_by_id,
+            )
+            normalized_answer = self.normalize_answer_value(response.answer_value)
+            resolved_from_answer_value = (
+                selected_option is not None
+                and response.selected_option_id is None
+                and normalized_answer == selected_option.label
+            )
 
             if selected_option is None:
                 unresolved_response_ids.append(response.id)
                 continue
 
             used_answer_value_resolution = used_answer_value_resolution or resolved_from_answer_value
-            max_risk_weight = max(option.risk_weight for option in options_by_question.get(question.id, []))
+            max_risk_weight = max((option.risk_weight or 0.0) for option in question_options)
             resolved_questions.append(
                 TriagedQuestionResponse(
                     question_code=question.question_code,
                     question_id=question.id,
                     response_id=response.id,
                     question_text=question.prompt,
-                    risk_domain=question.risk_domain,
+                    risk_domain=question.risk_domain or "",
                     is_required=question.is_required,
                     why_it_matters=question.why_it_matters,
                     selected_option_id=selected_option.id,
                     selected_option_label=selected_option.label,
-                    risk_weight=selected_option.risk_weight,
+                    risk_weight=selected_option.risk_weight or 0.0,
                     max_risk_weight=max_risk_weight,
                     risk_level=RiskLevel(selected_option.risk_band),
-                    risk_signal=selected_option.risk_signal,
+                    risk_signal=selected_option.risk_signal or "",
                     confidence=0.8 if resolved_from_answer_value else 1.0,
                     resolved_from_answer_value=resolved_from_answer_value,
                 )
@@ -200,7 +217,7 @@ class AssessmentRepository:
                 select(QuestionnaireVersion)
                 .where(
                     QuestionnaireVersion.questionnaire_type == questionnaire_type,
-                    QuestionnaireVersion.is_active.is_(True),
+                    QuestionnaireVersion.status == "active",
                 )
                 .order_by(QuestionnaireVersion.created_at.desc(), QuestionnaireVersion.id.desc())
             )
@@ -210,7 +227,7 @@ class AssessmentRepository:
         self,
         *,
         session: AsyncSession,
-        questionnaire_version_id: str | None,
+        questionnaire_version_id: UUID | None,
         order_by_section: bool,
         exclude_vendor_reputation: bool = False,
     ) -> list[QuestionDefinition]:
@@ -235,23 +252,23 @@ class AssessmentRepository:
                 key=lambda question: (
                     question.section_code or "",
                     question.question_order if question.question_order is not None else 0,
-                    question.id,
+                    str(question.id),
                 ),
             )
         return sorted(
             questions,
             key=lambda question: (
                 question.question_order if question.question_order is not None else 0,
-                question.id,
+                str(question.id),
             ),
         )
 
     async def _load_responses_by_question(
         self,
         session: AsyncSession,
-        assessment_id: str,
-        question_ids: list[str],
-    ) -> dict[str, AssessmentResponse]:
+        assessment_id: UUID | str,
+        question_ids: list[UUID],
+    ) -> dict[UUID, AssessmentResponse]:
         if not question_ids:
             return {}
 
@@ -259,7 +276,7 @@ class AssessmentRepository:
             await session.execute(
                 select(AssessmentResponse)
                 .where(
-                    AssessmentResponse.assessment_id == assessment_id,
+                    AssessmentResponse.assessment_id == self._coerce_uuid(assessment_id),
                     AssessmentResponse.question_definition_id.in_(question_ids),
                 )
                 .order_by(AssessmentResponse.created_at.asc(), AssessmentResponse.id.asc())
@@ -271,8 +288,8 @@ class AssessmentRepository:
     async def _load_options(
         self,
         session: AsyncSession,
-        question_ids: list[str],
-    ) -> tuple[dict[str, list[QuestionOption]], dict[str, QuestionOption]]:
+        question_ids: list[UUID],
+    ) -> tuple[dict[UUID, list[QuestionOption]], dict[UUID, QuestionOption]]:
         if not question_ids:
             return {}, {}
 
@@ -285,7 +302,7 @@ class AssessmentRepository:
         ).scalars().all()
 
         option_by_id = {option.id: option for option in options}
-        options_by_question: dict[str, list[QuestionOption]] = defaultdict(list)
+        options_by_question: dict[UUID, list[QuestionOption]] = defaultdict(list)
         for option in options:
             options_by_question[option.question_definition_id].append(option)
         return options_by_question, option_by_id
@@ -296,22 +313,22 @@ class AssessmentRepository:
         question: QuestionDefinition,
         response: AssessmentResponse | None,
         options: list[QuestionOption],
-        option_by_id: dict[str, QuestionOption],
+        option_by_id: dict[UUID, QuestionOption],
     ) -> IntakeQuestionRecord:
-        answer = self._resolve_answer(response, option_by_id)
-        response_type = "single_select" if options else "text"
+        selected_option = self._resolve_selected_option(response=response, options=options, option_by_id=option_by_id)
+        answer = self._resolve_answer(response=response, options=options, option_by_id=option_by_id)
         return IntakeQuestionRecord(
             question_id=question.id,
             question_code=question.question_code,
             label=question.prompt,
             answer=answer,
-            response_type=response_type,
+            response_type=question.response_type,
             required=question.is_required,
-            risk_domain=question.risk_domain,
+            risk_domain=question.risk_domain or "",
             section_code=question.section_code,
             response_id=response.id if response else None,
-            selected_option_id=response.selected_option_id if response else None,
-            answer_value=response.answer_value if response else None,
+            selected_option_id=selected_option.id if selected_option else None,
+            answer_value=self.normalize_answer_value(response.answer_value) if response else None,
         )
 
     def _build_triage_question_record(
@@ -319,16 +336,18 @@ class AssessmentRepository:
         *,
         question: QuestionDefinition,
         response: AssessmentResponse | None,
-        option_by_id: dict[str, QuestionOption],
+        options: list[QuestionOption],
+        option_by_id: dict[UUID, QuestionOption],
     ) -> IntakeTriageQuestionRecord:
+        selected_option = self._resolve_selected_option(response=response, options=options, option_by_id=option_by_id)
         return IntakeTriageQuestionRecord(
             question_id=question.id,
             question_code=question.question_code,
             label=question.prompt,
-            answer=self._resolve_answer(response, option_by_id),
+            answer=self._resolve_answer(response=response, options=options, option_by_id=option_by_id),
             response_id=response.id if response else None,
-            selected_option_id=response.selected_option_id if response else None,
-            answer_value=response.answer_value if response else None,
+            selected_option_id=selected_option.id if selected_option else None,
+            answer_value=self.normalize_answer_value(response.answer_value) if response else None,
         )
 
     def _group_intake_sections(self, questions: list[IntakeQuestionRecord]) -> list[IntakeSectionRecord]:
@@ -351,13 +370,48 @@ class AssessmentRepository:
 
     @staticmethod
     def _resolve_answer(
+        *,
         response: AssessmentResponse | None,
-        option_by_id: dict[str, QuestionOption],
+        options: list[QuestionOption],
+        option_by_id: dict[UUID, QuestionOption],
     ) -> str | None:
+        if response is None:
+            return None
+        selected_option = AssessmentRepository._resolve_selected_option(
+            response=response,
+            options=options,
+            option_by_id=option_by_id,
+        )
+        if selected_option is not None:
+            return selected_option.label
+        return AssessmentRepository.normalize_answer_value(response.answer_value)
+
+    @staticmethod
+    def _resolve_selected_option(
+        *,
+        response: AssessmentResponse | None,
+        options: list[QuestionOption],
+        option_by_id: dict[UUID, QuestionOption],
+    ) -> QuestionOption | None:
         if response is None:
             return None
         if response.selected_option_id:
             selected_option = option_by_id.get(response.selected_option_id)
             if selected_option is not None:
-                return selected_option.label
-        return response.answer_value
+                return selected_option
+        normalized_answer = AssessmentRepository.normalize_answer_value(response.answer_value)
+        if normalized_answer is None:
+            return None
+        return next((option for option in options if option.label == normalized_answer), None)
+
+    @staticmethod
+    def normalize_answer_value(answer_value: object | None) -> str | None:
+        if answer_value is None:
+            return None
+        if isinstance(answer_value, str):
+            return answer_value
+        return json.dumps(answer_value, separators=(",", ":"), ensure_ascii=False)
+
+    @staticmethod
+    def _coerce_uuid(value: UUID | str) -> UUID:
+        return value if isinstance(value, UUID) else UUID(value)
