@@ -149,6 +149,34 @@ class ExecutiveSummaryGenerateResponseDTO(BaseModel):
     executiveSummary: ExecutiveSummaryGenerateEnvelopeDTO
 
 
+class AIAnalysisRunSummaryDTO(BaseModel):
+    analysisRunId: UUID | None
+    status: AnalysisRunStatus | None
+    createdAt: datetime | None
+
+
+class AIAnalysisQuestionRowDTO(BaseModel):
+    questionId: UUID
+    questionNumber: str
+    questionText: str
+    domain: str
+    selectedOptionId: UUID | None
+    answerValue: str | None
+    riskBand: RiskLevel | None
+    riskScore: float | None
+    riskSignal: str | None
+    whyItMatters: str | None
+    aiExplanation: str | None
+    confidence: float | None
+    reviewerRemarks: str | None
+
+
+class AIAnalysisResponseDTO(BaseModel):
+    assessmentId: UUID
+    latestAnalysisRun: AIAnalysisRunSummaryDTO
+    questions: list[AIAnalysisQuestionRowDTO]
+
+
 class IntakeHeaderDTO(BaseModel):
     technologyName: str | None
     sourceSystem: str | None

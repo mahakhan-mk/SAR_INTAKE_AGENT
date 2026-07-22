@@ -10,12 +10,10 @@ from sqlalchemy import (
     JSON,
     Index,
     Integer,
-    JSON,
     MetaData,
     Numeric,
     String,
     Text,
-    Uuid,
     UniqueConstraint,
     func,
 )
