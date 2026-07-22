@@ -109,6 +109,11 @@ class IntakeService:
                     option_label=answer_value,
                 )
                 selected_option_id = matched_option.id if matched_option is not None else None
+            reviewer_remarks = (
+                payload.reviewerRemarks
+                if "reviewerRemarks" in payload.model_fields_set
+                else (existing_response.reviewer_remarks if existing_response else None)
+            )
 
             response = await self.response_repository.upsert_response(
                 session,
@@ -116,12 +121,15 @@ class IntakeService:
                 question_definition_id=question.id,
                 selected_option_id=selected_option_id,
                 answer_value=answer_value,
+                reviewer_remarks=reviewer_remarks,
+                reviewer_remarks_was_provided="reviewerRemarks" in payload.model_fields_set,
             )
             await session.commit()
             return IntakeQuestionUpdateResponseDTO(
                 questionId=str(response.question_definition_id),
                 selectedOptionId=str(response.selected_option_id) if response.selected_option_id is not None else None,
                 answerValue=self.assessment_repository.normalize_answer_value(response.answer_value),
+                reviewerRemarks=response.reviewer_remarks,
             )
         except Exception:
             await session.rollback()

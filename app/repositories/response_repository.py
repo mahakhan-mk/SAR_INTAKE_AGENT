@@ -33,6 +33,8 @@ class ResponseRepository:
         question_definition_id: UUID | str,
         selected_option_id: UUID | str | None,
         answer_value: str | None,
+        reviewer_remarks: str | None = None,
+        reviewer_remarks_was_provided: bool = False,
     ) -> AssessmentResponse:
         response = await self.get_response(session, assessment_id, question_definition_id)
         if response is None:
@@ -40,12 +42,15 @@ class ResponseRepository:
                 assessment_id=self._coerce_uuid(assessment_id),
                 question_definition_id=self._coerce_uuid(question_definition_id),
                 answer_value=answer_value,
+                reviewer_remarks=reviewer_remarks if reviewer_remarks_was_provided else None,
             )
             response.selected_option_id = self._coerce_uuid(selected_option_id) if selected_option_id is not None else None
             session.add(response)
         else:
             response.answer_value = answer_value
             response.selected_option_id = self._coerce_uuid(selected_option_id) if selected_option_id is not None else None
+            if reviewer_remarks_was_provided:
+                response.reviewer_remarks = reviewer_remarks
 
         await session.flush()
         return response

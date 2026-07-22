@@ -90,7 +90,7 @@ def test_intake_question_update_request_rejects_when_both_fields_are_omitted():
     with pytest.raises(ValidationError) as exc_info:
         IntakeQuestionUpdateRequestDTO()
 
-    assert "At least one of selectedOptionId or answerValue must be provided." in str(exc_info.value)
+    assert "At least one of selectedOptionId, answerValue, or reviewerRemarks must be provided." in str(exc_info.value)
 
 
 def test_intake_question_update_request_accepts_selected_option_only():
@@ -98,6 +98,7 @@ def test_intake_question_update_request_accepts_selected_option_only():
 
     assert dto.selectedOptionId == UUID("00000000-0000-0000-0000-000000000001")
     assert dto.answerValue is None
+    assert dto.reviewerRemarks is None
     assert dto.model_fields_set == {"selectedOptionId"}
 
 
@@ -106,6 +107,7 @@ def test_intake_question_update_request_accepts_explicit_null_for_clearing():
 
     assert dto.selectedOptionId is None
     assert dto.answerValue is None
+    assert dto.reviewerRemarks is None
     assert dto.model_fields_set == {"selectedOptionId"}
 
 
@@ -114,7 +116,17 @@ def test_intake_question_update_request_accepts_both_fields_as_explicit_null():
 
     assert dto.selectedOptionId is None
     assert dto.answerValue is None
+    assert dto.reviewerRemarks is None
     assert dto.model_fields_set == {"selectedOptionId", "answerValue"}
+
+
+def test_intake_question_update_request_accepts_reviewer_remarks_only():
+    dto = IntakeQuestionUpdateRequestDTO(reviewerRemarks="Needs follow-up")
+
+    assert dto.selectedOptionId is None
+    assert dto.answerValue is None
+    assert dto.reviewerRemarks == "Needs follow-up"
+    assert dto.model_fields_set == {"reviewerRemarks"}
 
 
 def test_intake_question_update_response_dto_serializes_expected_shape():
@@ -122,10 +134,12 @@ def test_intake_question_update_response_dto_serializes_expected_shape():
         questionId="00000000-0000-0000-0000-000000000004",
         selectedOptionId="00000000-0000-0000-0000-000000000005",
         answerValue="Yes",
+        reviewerRemarks="Validated by reviewer",
     )
 
     assert dto.model_dump(mode="json") == {
         "questionId": "00000000-0000-0000-0000-000000000004",
         "selectedOptionId": "00000000-0000-0000-0000-000000000005",
         "answerValue": "Yes",
+        "reviewerRemarks": "Validated by reviewer",
     }

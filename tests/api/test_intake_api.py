@@ -100,6 +100,7 @@ async def test_patch_question_response_successful(client, db_session, seeded_ass
         "questionId": str(question.id),
         "selectedOptionId": str(options[0].id),
         "answerValue": "Selected",
+        "reviewerRemarks": None,
     }
 
 
@@ -167,4 +168,4 @@ async def test_patch_question_response_rejects_empty_body(client, db_session, se
     )
 
     assert response.status_code == 422
-    assert "At least one of selectedOptionId or answerValue must be provided." in str(response.json())
+    assert "At least one of selectedOptionId, answerValue, or reviewerRemarks must be provided." in str(response.json())

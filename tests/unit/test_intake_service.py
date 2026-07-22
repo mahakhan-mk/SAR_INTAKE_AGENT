@@ -101,6 +101,7 @@ async def test_update_question_response_creates_then_updates_successfully(db_ses
     assert created.questionId == question.id
     assert created.selectedOptionId == options[0].id
     assert created.answerValue == "First"
+    assert created.reviewerRemarks is None
 
     updated = await service.update_question_response(
         db_session,
@@ -112,6 +113,66 @@ async def test_update_question_response_creates_then_updates_successfully(db_ses
     assert updated.questionId == question.id
     assert updated.selectedOptionId is None
     assert updated.answerValue == "Updated"
+    assert updated.reviewerRemarks is None
+
+
+async def test_update_question_response_updates_only_reviewer_remarks(db_session, seeded_assessment):
+    question, options = await add_question_with_options(
+        db_session,
+        seeded_assessment["questionnaire_version_id"],
+        risk_domain="Security",
+        options=[("Selected", RiskLevel.HIGH, 3.0, "High signal")],
+    )
+    existing_response = await add_response(
+        db_session,
+        seeded_assessment["assessment_id"],
+        question,
+        options[0],
+    )
+    existing_response.reviewer_remarks = "Initial remarks"
+    await db_session.commit()
+    service = build_service()
+
+    updated = await service.update_question_response(
+        db_session,
+        assessment_id=seeded_assessment["assessment_id"],
+        question_id=question.id,
+        payload=IntakeQuestionUpdateRequestDTO(reviewerRemarks="Updated remarks"),
+    )
+
+    assert updated.questionId == question.id
+    assert updated.selectedOptionId == options[0].id
+    assert updated.answerValue == "Selected"
+    assert updated.reviewerRemarks == "Updated remarks"
+
+    stored_response = await ResponseRepository().get_response(db_session, seeded_assessment["assessment_id"], question.id)
+    assert stored_response is not None
+    assert stored_response.selected_option_id == options[0].id
+    assert stored_response.answer_value == "Selected"
+    assert stored_response.reviewer_remarks == "Updated remarks"
+
+
+async def test_update_question_response_updates_reviewer_remarks_with_answer(db_session, seeded_assessment):
+    question, _ = await add_question_with_options(
+        db_session,
+        seeded_assessment["questionnaire_version_id"],
+        risk_domain="Security",
+        response_type="text",
+        options=[],
+    )
+    service = build_service()
+
+    updated = await service.update_question_response(
+        db_session,
+        assessment_id=seeded_assessment["assessment_id"],
+        question_id=question.id,
+        payload=IntakeQuestionUpdateRequestDTO(answerValue="Updated answer", reviewerRemarks="Reviewed"),
+    )
+
+    assert updated.questionId == question.id
+    assert updated.selectedOptionId is None
+    assert updated.answerValue == "Updated answer"
+    assert updated.reviewerRemarks == "Reviewed"
 
 
 async def test_update_question_response_rejects_invalid_question(db_session, seeded_assessment):
@@ -195,6 +256,37 @@ async def test_update_question_response_allows_explicit_null_clearing(db_session
     assert updated.questionId == question.id
     assert updated.selectedOptionId is None
     assert updated.answerValue is None
+    assert updated.reviewerRemarks is None
+
+
+async def test_update_question_response_clears_reviewer_remarks(db_session, seeded_assessment):
+    question, options = await add_question_with_options(
+        db_session,
+        seeded_assessment["questionnaire_version_id"],
+        risk_domain="Security",
+        options=[("Selected", RiskLevel.HIGH, 3.0, "High signal")],
+    )
+    existing_response = await add_response(
+        db_session,
+        seeded_assessment["assessment_id"],
+        question,
+        options[0],
+    )
+    existing_response.reviewer_remarks = "Needs review"
+    await db_session.commit()
+    service = build_service()
+
+    updated = await service.update_question_response(
+        db_session,
+        assessment_id=seeded_assessment["assessment_id"],
+        question_id=question.id,
+        payload=IntakeQuestionUpdateRequestDTO(reviewerRemarks=None),
+    )
+
+    assert updated.questionId == question.id
+    assert updated.selectedOptionId == options[0].id
+    assert updated.answerValue == "Selected"
+    assert updated.reviewerRemarks is None
 
 
 async def test_update_question_response_rolls_back_on_failure(db_session, seeded_assessment, monkeypatch):

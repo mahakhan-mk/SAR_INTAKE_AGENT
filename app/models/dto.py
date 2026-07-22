@@ -191,11 +191,12 @@ class IntakeOverviewResponseDTO(BaseModel):
 class IntakeQuestionUpdateRequestDTO(BaseModel):
     selectedOptionId: UUID | None = None
     answerValue: str | None = None
+    reviewerRemarks: str | None = None
 
     @model_validator(mode="after")
     def validate_at_least_one_field_was_provided(self) -> "IntakeQuestionUpdateRequestDTO":
-        if "selectedOptionId" not in self.model_fields_set and "answerValue" not in self.model_fields_set:
-            raise ValueError("At least one of selectedOptionId or answerValue must be provided.")
+        if not {"selectedOptionId", "answerValue", "reviewerRemarks"} & self.model_fields_set:
+            raise ValueError("At least one of selectedOptionId, answerValue, or reviewerRemarks must be provided.")
         return self
 
 
@@ -203,3 +204,4 @@ class IntakeQuestionUpdateResponseDTO(BaseModel):
     questionId: UUID
     selectedOptionId: UUID | None
     answerValue: str | None
+    reviewerRemarks: str | None
