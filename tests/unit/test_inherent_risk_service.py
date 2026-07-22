@@ -213,8 +213,8 @@ async def test_top_risk_drivers_are_limited_and_deterministic(db_session, seeded
 
     assert [driver.model_dump() for driver in dto.topRiskDrivers] == [
         {"domain": "Business Continuity", "level": RiskLevel.CRITICAL},
+        {"domain": "Vendor Reputation", "level": RiskLevel.CRITICAL},
         {"domain": "Security", "level": RiskLevel.HIGH},
-        {"domain": "Operations", "level": RiskLevel.HIGH},
     ]
 
 
@@ -240,7 +240,7 @@ async def test_answer_value_json_path_sets_full_confidence(db_session, seeded_as
         )
     ).scalars().one()
 
-    assert stored_result.ai_confidence == 1.0
+    assert stored_result.confidence == 1.0
 
 
 async def test_unresolvable_answer_value_json_creates_limitation(db_session, seeded_assessment):
@@ -298,10 +298,10 @@ async def test_db_configuration_fields_are_read_and_explanation_uses_db_values(d
         )
     ).scalars().one()
 
-    assert stored_result.why_it_matters == "Stored why-it-matters text."
+    assert stored_result.risk_impact == "Stored why-it-matters text."
     assert stored_result.risk_signal == "Stored risk signal text."
-    assert "Stored why-it-matters text." in (stored_result.ai_explanation or "")
-    assert "Stored risk signal text." in (stored_result.ai_explanation or "")
+    assert "Stored why-it-matters text." in stored_result.explanation
+    assert "Stored risk signal text." in stored_result.explanation
 
 
 async def test_existing_completed_run_is_returned_correctly(db_session, seeded_completed_run):
@@ -366,7 +366,7 @@ async def test_failed_run_is_not_selected_as_latest_completed_run(db_session, se
             id=uuid.uuid4(),
             assessment_id=seeded_completed_run["assessment_id"],
             status=AnalysisRunStatus.FAILED.value,
-            scoring_config_version="existing-config-v1",
+            scoring_rule_version="existing-config-v1",
             inherent_risk_level=RiskLevel.NOT_ASSESSED.value,
         )
     )

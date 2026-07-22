@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Iterable
 import uuid
 
 from sqlalchemy import select
@@ -10,7 +11,7 @@ from app.models.database import AssessmentResponse, QuestionDefinition, Question
 from app.models.dto import TriagedQuestionLoadResult, TriagedQuestionResponse
 from app.models.enums import QuestionnaireType, RiskLevel
 
-VENDOR_REPUTATION_DOMAIN = "Vendor Reputation"
+SCORABLE_RESPONSE_TYPES = ("single_select", "multi_select")
 
 
 class AssessmentRepository:
@@ -41,7 +42,8 @@ class AssessmentRepository:
                 select(QuestionDefinition)
                 .where(
                     QuestionDefinition.questionnaire_version_id == version.id,
-                    QuestionDefinition.risk_domain != VENDOR_REPUTATION_DOMAIN,
+                    QuestionDefinition.is_visible.is_(True),
+                    QuestionDefinition.response_type.in_(SCORABLE_RESPONSE_TYPES),
                 )
                 .order_by(QuestionDefinition.question_order.asc(), QuestionDefinition.id.asc())
             )
@@ -90,39 +92,46 @@ class AssessmentRepository:
             if question is None:
                 continue
 
-            selected_response = self._extract_selected_response(response.answer_value)
-            if selected_response is None:
+            if response.response_status != "answered":
+                continue
+
+            candidate_values = self._extract_candidate_values(response.answer_value)
+            if not candidate_values:
                 unresolved_response_ids.append(response.id)
                 continue
 
-            selected_option = next(
-                (
-                    option
-                    for option in options_by_question[question.id]
-                    if option.option_label == selected_response
-                ),
-                None,
-            )
+            selected_option = self._match_selected_option(options_by_question[question.id], candidate_values)
 
             if selected_option is None:
                 unresolved_response_ids.append(response.id)
                 continue
 
-            max_risk_weight = max(option.risk_weight for option in options_by_question[question.id])
+            if selected_option.risk_weight is None or selected_option.risk_band is None:
+                unresolved_response_ids.append(response.id)
+                continue
+
+            weighted_options = [option for option in options_by_question[question.id] if option.risk_weight is not None]
+            if not weighted_options:
+                unresolved_response_ids.append(response.id)
+                continue
+
+            max_risk_weight = max(float(option.risk_weight) for option in weighted_options)
             resolved_questions.append(
                 TriagedQuestionResponse(
                     question_code=question.question_code,
                     question_id=question.id,
                     response_id=response.id,
+                    selected_option_id=selected_option.id,
+                    selected_option_code=selected_option.option_code,
                     question_text=question.question_text,
-                    risk_domain=question.risk_domain,
+                    risk_domain=question.risk_domain or "",
                     is_required=question.is_required,
-                    why_it_matters=selected_option.why_it_matters,
+                    why_it_matters=selected_option.why_it_matters or "",
                     selected_option_label=selected_option.option_label,
-                    risk_weight=selected_option.risk_weight,
+                    risk_weight=float(selected_option.risk_weight),
                     max_risk_weight=max_risk_weight,
                     risk_level=RiskLevel(selected_option.risk_band),
-                    risk_signal=selected_option.risk_signal,
+                    risk_signal=selected_option.risk_signal or "",
                     confidence=1.0,
                 )
             )
@@ -134,8 +143,36 @@ class AssessmentRepository:
         )
 
     @staticmethod
-    def _extract_selected_response(answer_value: dict[str, object] | None) -> str | None:
-        if not isinstance(answer_value, dict):
-            return None
-        value = answer_value.get("selectedResponse")
-        return value if isinstance(value, str) else None
+    def _extract_candidate_values(answer_value: object | None) -> list[str]:
+        if isinstance(answer_value, str):
+            return [answer_value] if answer_value else []
+
+        if isinstance(answer_value, dict):
+            values: list[str] = []
+            for key in ("optionCode", "option_code", "selectedResponse", "optionLabel", "option_label", "value"):
+                values.extend(AssessmentRepository._coerce_strings(answer_value.get(key)))
+            return list(dict.fromkeys(values))
+
+        if isinstance(answer_value, list):
+            return [value for value in answer_value if isinstance(value, str) and value]
+
+        return []
+
+    @staticmethod
+    def _coerce_strings(value: object) -> list[str]:
+        if isinstance(value, str):
+            return [value] if value else []
+        if isinstance(value, Iterable) and not isinstance(value, (str, bytes, dict)):
+            return [item for item in value if isinstance(item, str) and item]
+        return []
+
+    @staticmethod
+    def _match_selected_option(options: list[QuestionOption], candidate_values: list[str]) -> QuestionOption | None:
+        for candidate in candidate_values:
+            for option in options:
+                if option.option_code == candidate:
+                    return option
+            for option in options:
+                if option.option_label == candidate:
+                    return option
+        return None

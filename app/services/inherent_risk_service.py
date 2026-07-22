@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from collections import defaultdict
 from typing import Sequence
 import uuid
@@ -162,7 +161,7 @@ class InherentRiskService:
                 session=session,
                 assessment_id=assessment_id,
                 status=status,
-                scoring_config_version=self.scoring_policy.version,
+                scoring_rule_version=self.scoring_policy.version,
                 triage_score=triage_score,
                 inherent_score=inherent_score,
                 inherent_risk_level=overall_level,
@@ -175,7 +174,7 @@ class InherentRiskService:
                 session=session,
                 assessment_id=assessment_id,
                 status=AnalysisRunStatus.FAILED,
-                scoring_config_version=self.scoring_policy.version,
+                scoring_rule_version=self.scoring_policy.version,
                 triage_score=None,
                 inherent_score=None,
                 inherent_risk_level=RiskLevel.NOT_ASSESSED,
@@ -225,21 +224,27 @@ class InherentRiskService:
                 f"This matters because {response.why_it_matters} "
                 f"The selected response indicates {response.risk_signal}."
             )
-            input_snapshot = json.dumps(
-                {
-                    "questionCode": str(response.question_code),
-                    "selectedResponse": response.selected_option_label,
-                    "riskBand": response.risk_level.value,
-                    "scoringRuleVersion": self.scoring_policy.version,
-                },
-                separators=(",", ":"),
-            )
+            input_snapshot = {
+                "questionCode": response.question_code,
+                "questionId": str(response.question_id),
+                "questionText": response.question_text,
+                "selectedOptionId": str(response.selected_option_id),
+                "selectedOptionCode": response.selected_option_code,
+                "selectedOptionLabel": response.selected_option_label,
+                "selectedResponse": response.selected_option_label,
+                "riskWeight": response.risk_weight,
+                "maxRiskWeight": response.max_risk_weight,
+                "whyItMatters": response.why_it_matters,
+                "riskSignal": response.risk_signal,
+                "riskBand": response.risk_level.value,
+                "scoringRuleVersion": self.scoring_policy.version,
+            }
             question_results.append(
                 ComputedQuestionRisk(
                     question_code=response.question_code,
                     response_id=response.response_id,
                     question_definition_id=response.question_id,
-                    selected_option_id=None,
+                    selected_option_id=response.selected_option_id,
                     selected_option_label=response.selected_option_label,
                     question_text=response.question_text,
                     risk_domain=response.risk_domain,

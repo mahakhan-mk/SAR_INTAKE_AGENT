@@ -61,7 +61,7 @@ async def test_post_analysis_run_persists_run(client, db_session, seeded_assessm
     assert response.json()["status"] == "completed"
     run = await db_session.get(QuestionAnalysisRun, uuid.UUID(response.json()["analysisRunId"]))
     assert run is not None
-    assert run.scoring_config_version == "inherent-risk-v1-percentage"
+    assert run.scoring_rule_version == "inherent-risk-v1-percentage"
     assert run.triage_score == 2.0
     assert run.inherent_score == 50.0
     assert run.inherent_risk_level == "high"
@@ -163,7 +163,7 @@ async def test_get_returns_latest_successful_run_when_failed_run_exists(client, 
             id=uuid.uuid4(),
             assessment_id=seeded_assessment["assessment_id"],
             status=AnalysisRunStatus.FAILED.value,
-            scoring_config_version="inherent-risk-v1-percentage",
+            scoring_rule_version="inherent-risk-v1-percentage",
             inherent_risk_level=RiskLevel.NOT_ASSESSED.value,
         )
     )

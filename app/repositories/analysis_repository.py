@@ -68,21 +68,21 @@ class AnalysisRepository:
             error_summary=run.error_summary,
             question_results=[
                 ComputedQuestionRisk(
-                    question_code=self._extract_question_code(result.input_snapshot),
+                    question_code=self._extract_str(result.input_snapshot, "questionCode"),
                     response_id=result.response_id,
-                    question_definition_id=result.question_definition_id,
-                    selected_option_id=result.selected_option_id,
+                    question_definition_id=self._extract_uuid(result.input_snapshot, "questionId"),
+                    selected_option_id=self._extract_uuid(result.input_snapshot, "selectedOptionId"),
                     selected_option_label=self._extract_selected_response(result.input_snapshot),
-                    question_text=result.question_text,
-                    risk_domain=result.risk_domain,
+                    question_text=self._extract_str(result.input_snapshot, "questionText"),
+                    risk_domain=result.risk_domain or "",
                     risk_level=RiskLevel(result.risk_level),
-                    risk_weight=result.risk_weight,
-                    max_risk_weight=result.risk_weight,
-                    why_it_matters=result.why_it_matters,
-                    risk_signal=result.risk_signal,
-                    explanation=result.ai_explanation or "",
-                    confidence=result.ai_confidence or 0.0,
-                    input_snapshot=result.input_snapshot or "",
+                    risk_weight=self._extract_float(result.input_snapshot, "riskWeight", result.risk_score),
+                    max_risk_weight=self._extract_float(result.input_snapshot, "maxRiskWeight", result.risk_score),
+                    why_it_matters=self._extract_str(result.input_snapshot, "whyItMatters", result.risk_impact),
+                    risk_signal=result.risk_signal or self._extract_str(result.input_snapshot, "riskSignal"),
+                    explanation=result.explanation,
+                    confidence=float(result.confidence or 0.0),
+                    input_snapshot=self._coerce_snapshot(result.input_snapshot),
                 )
                 for result in results
             ],
@@ -93,21 +93,26 @@ class AnalysisRepository:
         session: AsyncSession,
         assessment_id: uuid.UUID,
         status: AnalysisRunStatus,
-        scoring_config_version: str,
+        scoring_rule_version: str,
         triage_score: float | None,
         inherent_score: float | None,
         inherent_risk_level: RiskLevel,
+        intake_score: float | None = None,
         error_summary: str | None = None,
     ) -> QuestionAnalysisRun:
+        now = datetime.now(timezone.utc)
         run = QuestionAnalysisRun(
             assessment_id=assessment_id,
             status=status.value,
-            scoring_config_version=scoring_config_version,
+            scoring_rule_version=scoring_rule_version,
+            intake_score=intake_score,
             triage_score=triage_score,
             inherent_score=inherent_score,
             inherent_risk_level=inherent_risk_level.value,
             error_summary=error_summary,
-            created_at=datetime.now(timezone.utc),
+            started_at=now,
+            completed_at=now,
+            created_at=now,
         )
         session.add(run)
         await session.flush()
@@ -154,26 +159,52 @@ class AnalysisRepository:
         return run
 
     @staticmethod
-    def _extract_selected_response(input_snapshot: str | None) -> str:
-        if not input_snapshot:
-            return ""
-        try:
-            snapshot = json.loads(input_snapshot)
-        except json.JSONDecodeError:
-            return ""
+    def _extract_selected_response(input_snapshot: object | None) -> str:
+        snapshot = AnalysisRepository._coerce_snapshot(input_snapshot)
+        value = snapshot.get("selectedOptionLabel")
+        if isinstance(value, str):
+            return value
         value = snapshot.get("selectedResponse")
         return value if isinstance(value, str) else ""
 
     @staticmethod
-    def _extract_question_code(input_snapshot: str | None) -> str:
-        if not input_snapshot:
-            return ""
-        try:
-            snapshot = json.loads(input_snapshot)
-        except json.JSONDecodeError:
-            return ""
-        value = snapshot.get("questionCode")
+    def _coerce_snapshot(input_snapshot: object | None) -> dict[str, object]:
+        if isinstance(input_snapshot, dict):
+            return input_snapshot
+        if isinstance(input_snapshot, str):
+            try:
+                parsed = json.loads(input_snapshot)
+            except json.JSONDecodeError:
+                return {}
+            return parsed if isinstance(parsed, dict) else {}
+        return {}
+
+    @staticmethod
+    def _extract_str(input_snapshot: object | None, key: str, fallback: object | None = None) -> str:
+        snapshot = AnalysisRepository._coerce_snapshot(input_snapshot)
+        value = snapshot.get(key, fallback)
         return value if isinstance(value, str) else ""
+
+    @staticmethod
+    def _extract_uuid(input_snapshot: object | None, key: str) -> uuid.UUID | None:
+        value = AnalysisRepository._extract_str(input_snapshot, key)
+        if not value:
+            return None
+        try:
+            return uuid.UUID(value)
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _extract_float(input_snapshot: object | None, key: str, fallback: object | None = None) -> float:
+        snapshot = AnalysisRepository._coerce_snapshot(input_snapshot)
+        value = snapshot.get(key, fallback)
+        if value is None:
+            return 0.0
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
 
     async def upsert_question_risk_results(
         self,
@@ -202,31 +233,25 @@ class AnalysisRepository:
                     QuestionRiskResult(
                         analysis_run_id=analysis_run_id,
                         response_id=result.response_id,
-                        question_definition_id=result.question_definition_id,
-                        selected_option_id=result.selected_option_id,
-                        question_text=result.question_text,
                         risk_domain=result.risk_domain,
+                        risk_score=result.risk_weight,
                         risk_level=result.risk_level.value,
-                        risk_weight=result.risk_weight,
-                        why_it_matters=result.why_it_matters,
+                        risk_impact=result.why_it_matters,
                         risk_signal=result.risk_signal,
-                        ai_explanation=result.explanation,
-                        ai_confidence=result.confidence,
+                        explanation=result.explanation,
+                        confidence=result.confidence,
                         input_snapshot=result.input_snapshot,
                     )
                 )
                 continue
 
-            existing.question_definition_id = result.question_definition_id
-            existing.selected_option_id = result.selected_option_id
-            existing.question_text = result.question_text
             existing.risk_domain = result.risk_domain
+            existing.risk_score = result.risk_weight
             existing.risk_level = result.risk_level.value
-            existing.risk_weight = result.risk_weight
-            existing.why_it_matters = result.why_it_matters
+            existing.risk_impact = result.why_it_matters
             existing.risk_signal = result.risk_signal
-            existing.ai_explanation = result.explanation
-            existing.ai_confidence = result.confidence
+            existing.explanation = result.explanation
+            existing.confidence = result.confidence
             existing.input_snapshot = result.input_snapshot
 
         await session.flush()

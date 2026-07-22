@@ -14,6 +14,8 @@ class TriagedQuestionResponse:
     question_code: str
     question_id: uuid.UUID
     response_id: uuid.UUID
+    selected_option_id: uuid.UUID
+    selected_option_code: str
     question_text: str
     risk_domain: str
     is_required: bool
@@ -37,7 +39,7 @@ class TriagedQuestionLoadResult:
 class ComputedQuestionRisk:
     question_code: str
     response_id: uuid.UUID
-    question_definition_id: uuid.UUID
+    question_definition_id: uuid.UUID | None
     selected_option_id: uuid.UUID | None
     selected_option_label: str
     question_text: str
@@ -49,7 +51,7 @@ class ComputedQuestionRisk:
     risk_signal: str
     explanation: str
     confidence: float
-    input_snapshot: str
+    input_snapshot: dict[str, object]
 
 
 @dataclass(frozen=True)

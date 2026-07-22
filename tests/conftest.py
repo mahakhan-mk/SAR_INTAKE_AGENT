@@ -142,14 +142,14 @@ async def add_response(
 ) -> AssessmentResponse:
     resolved_answer_value = answer_value
     if resolved_answer_value is None and option is not None:
-        resolved_answer_value = {"selectedResponse": option.option_label}
+        resolved_answer_value = option.option_label
 
     response = AssessmentResponse(
         id=uuid.uuid4(),
         assessment_id=assessment_id,
         question_id=question.id,
         answer_value=resolved_answer_value,
-        response_status="submitted",
+        response_status="answered",
     )
     session.add(response)
     await session.commit()
@@ -211,7 +211,7 @@ async def seeded_completed_run(
         id=uuid.uuid4(),
         assessment_id=seeded_assessment["assessment_id"],
         status=AnalysisRunStatus.COMPLETED.value,
-        scoring_config_version="existing-config-v1",
+        scoring_rule_version="existing-config-v1",
         triage_score=3.0,
         inherent_score=75.0,
         inherent_risk_level=RiskLevel.HIGH.value,
@@ -228,17 +228,28 @@ async def seeded_completed_run(
             id=uuid.uuid4(),
             analysis_run_id=run.id,
             response_id=response.id,
-            question_definition_id=question.id,
-            selected_option_id=selected_option.id,
-            question_text=question.question_text,
             risk_domain=question.risk_domain,
             risk_level=RiskLevel.HIGH.value,
-            risk_weight=selected_option.risk_weight,
-            why_it_matters=selected_option.why_it_matters,
+            risk_score=selected_option.risk_weight,
+            risk_impact=selected_option.why_it_matters,
             risk_signal=selected_option.risk_signal,
-            ai_explanation='Question "Business Continuity question" was answered with "Selected". This matters because Configuration-defined rationale. The selected response indicates High disruption exposure..',
-            ai_confidence=1.0,
-            input_snapshot='{"questionCode":"' + question.question_code + '","selectedResponse":"Selected","riskBand":"high","scoringRuleVersion":"existing-config-v1"}',
+            explanation='Question "Business Continuity question" was answered with "Selected". This matters because Configuration-defined rationale. The selected response indicates High disruption exposure..',
+            confidence=1.0,
+            input_snapshot={
+                "questionCode": question.question_code,
+                "questionId": str(question.id),
+                "questionText": question.question_text,
+                "selectedOptionId": str(selected_option.id),
+                "selectedOptionCode": selected_option.option_code,
+                "selectedOptionLabel": selected_option.option_label,
+                "selectedResponse": selected_option.option_label,
+                "riskWeight": selected_option.risk_weight,
+                "maxRiskWeight": max(option.risk_weight for option in options if option.risk_weight is not None),
+                "whyItMatters": selected_option.why_it_matters,
+                "riskSignal": selected_option.risk_signal,
+                "riskBand": RiskLevel.HIGH.value,
+                "scoringRuleVersion": "existing-config-v1",
+            },
         )
     )
     await db_session.commit()

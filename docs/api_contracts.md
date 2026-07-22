@@ -1,84 +1,16 @@
 # API Contracts
 
-## Overview
+## Current Implemented Endpoints
 
-The SAR Assessment Service exposes APIs for:
+The current application exposes three inherent-risk endpoints from [app/api/v1/inherent_risk.py](/C:/Users/Lenovo/Documents/SAR_INTAKE_AGENT/app/api/v1/inherent_risk.py):
 
-- Intake Overview
-- Inherent Risk
-- AI Analysis
-- HITL Review
-- Document Checklist
-- Document Management
-- Report Preview
-- Report Generation
-
-Vendor Reputation is handled by a separate service.
-
----
-
-# Intake
-
-## GET /api/v1/assessments/{assessmentId}/intake
-
-Returns the complete intake questionnaire with responses.
-
-Response
-
-```json
-{
-  "assessmentId": "uuid",
-  "technologyName": "Microsoft 365 Copilot",
-  "sections": [
-    {
-      "title": "General",
-      "questions": []
-    }
-  ]
-}
-```
-
----
-
-# Analysis Run
-
-## POST /api/v1/assessments/{assessmentId}/analysis-runs
-
-Creates a new deterministic analysis run for triage-based inherent risk.
-
-Request
-
-```json
-{
-  "force": false
-}
-```
-
-Response
-
-```json
-{
-  "analysisRunId": "uuid",
-  "status": "completed"
-}
-```
-
-Behavior
-
-- Returns `404` when `assessmentId` does not exist.
-- Persists one `question_analysis_runs` row and one `question_risk_results` row for each answered triage response.
-- Uses scoring rule version `inherent-risk-v1-percentage`.
-- Preserves previous runs.
-- Marks the run as `completed_with_limitations` when active triage questions are missing responses or when answer resolution required `answer_value` fallback.
-- Marks the run as `failed` when persistence fails; failed runs are never returned by the inherent-risk GET as the latest successful result.
-
----
-
-# Inherent Risk
+- `GET /api/v1/assessments/{assessmentId}/inherent-risk`
+- `POST /api/v1/assessments/{assessmentId}/analysis-runs`
+- `POST /api/v1/assessments/{assessmentId}/inherent-risk/executive-summary`
 
 ## GET /api/v1/assessments/{assessmentId}/inherent-risk
 
-Returns the summary page.
+Returns the inherent-risk screen projection for the latest successful deterministic run, or creates one on demand when answered triage data exists.
 
 Response
 
@@ -88,15 +20,15 @@ Response
   "analysisRunId": "uuid",
   "status": "completed",
   "inherentRisk": {
-    "level": "medium",
-    "label": "Medium",
-    "highRiskQuestionCount": 3,
+    "level": "high",
+    "label": "High",
+    "highRiskQuestionCount": 2,
     "sourceText": "Derived from SAR triage questions."
   },
   "topRiskDrivers": [
     {
       "domain": "Business Continuity",
-      "level": "high"
+      "level": "critical"
     }
   ],
   "executiveSummary": {
@@ -113,84 +45,80 @@ Response
 
 Behavior
 
-- Returns `404` when `assessmentId` does not exist.
-- Returns a controlled `not_assessed` response when no completed analysis exists.
-- Returns the latest successful `question_analysis_runs` record when one already exists.
-- If no successful run exists and answered triage responses are present, the service calculates and persists a deterministic run before returning the screen DTO.
-- Does not expose numeric weights or aggregation formulas in the DTO.
-- Excludes Vendor Reputation entirely from this payload.
+- Returns `404` when the assessment does not exist.
+- Reads the latest `question_analysis_runs` row whose status is `completed` or `completed_with_limitations`.
+- Ignores failed runs when selecting the latest snapshot.
+- If no successful run exists and resolved answered triage responses are available, creates a new deterministic run before returning the DTO.
+- If no successful run exists and no resolved triage responses are available, returns `analysisRunId: null`, `status: completed_with_limitations`, and `inherentRisk.level: not_assessed`.
+- Exposes summary status and saved summary text from the selected run.
 
----
+## POST /api/v1/assessments/{assessmentId}/analysis-runs
 
-# AI Analysis
+Creates a new deterministic analysis run and preserves prior runs.
 
-## GET /api/v1/assessments/{assessmentId}/ai-analysis
+Request
 
-Returns every analysed question.
+```json
+{
+  "force": false
+}
+```
+
+Response
+
+```json
+{
+  "analysisRunId": "uuid",
+  "status": "completed_with_limitations"
+}
+```
+
+Behavior
+
+- Returns `404` when the assessment does not exist.
+- Always creates a new `question_analysis_runs` row.
+- Persists one `question_risk_results` row for each resolved answered triage response.
+- Uses scoring rule version `inherent-risk-v1-percentage`.
+- Sets run status to `completed` or `completed_with_limitations` based on required-question coverage and response resolution.
+- Sets run status to `failed` and persists the failure when database persistence raises an exception.
+- Accepts `force`, but the current implementation does not branch on that field.
+
+## POST /api/v1/assessments/{assessmentId}/inherent-risk/executive-summary
+
+Generates or reuses the executive summary for the latest successful inherent-risk run.
+
+Request
+
+```json
+{
+  "force": false
+}
+```
 
 Response
 
 ```json
 {
   "assessmentId": "uuid",
-  "questions": []
+  "analysisRunId": "uuid",
+  "executiveSummary": {
+    "text": "Generated executive summary.",
+    "status": "generated",
+    "generatedAt": "2026-07-22T09:00:00Z"
+  }
 }
 ```
 
----
+Behavior
 
-## PATCH /api/v1/assessments/{assessmentId}/ai-analysis/questions/{responseId}
-
-Updates reviewer override.
-
-Request
-
-```json
-{
-  "reviewerRiskLevel": "high",
-  "remarks": "...",
-  "mitigation": "..."
-}
-```
-
----
-
-# Document Checklist
-
-## GET /api/v1/assessments/{assessmentId}/document-checklist
-
-Returns checklist.
-
----
-
-## PATCH /api/v1/assessments/{assessmentId}/document-checklist/items/{itemId}
-
-Updates reviewer verdict.
-
----
-
-## POST /api/v1/assessments/{assessmentId}/documents
-
-Uploads metadata for a document.
-
----
-
-# Report Preview
-
-## GET /api/v1/assessments/{assessmentId}/report-preview
-
-Returns the assembled report.
-
----
-
-# Reports
-
-## POST /api/v1/assessments/{assessmentId}/reports
-
-Creates report snapshot.
-
----
-
-## GET /api/v1/reports/{reportId}
-
-Returns generated report.
+- Returns `404` when the assessment does not exist.
+- Ensures a successful inherent-risk analysis run exists before generating the summary.
+- Reuses the saved summary when `executive_summary_input_hash` matches the newly built input payload and `force` is `false`.
+- Loads the prompt from `app/prompts/executive_summary.yaml`.
+- Persists summary text to `question_analysis_runs.executive_summary`.
+- Persists summary metadata to:
+  - `executive_summary_model`
+  - `executive_summary_prompt_version`
+  - `executive_summary_input_hash`
+  - `executive_summary_generated_at`
+- Returns `status: fallback` and stores a deterministic fallback summary when Azure OpenAI times out, fails, or returns invalid structured output.
