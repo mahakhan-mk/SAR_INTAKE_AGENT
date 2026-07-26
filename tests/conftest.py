@@ -100,7 +100,6 @@ async def add_question_with_options(
         question_text=question_text or f"{risk_domain} question",
         response_type=response_type or "single_select",
         risk_domain=risk_domain,
-        is_visible=is_visible,
         is_required=is_required,
         section_code="triage",
         question_order=question_order,

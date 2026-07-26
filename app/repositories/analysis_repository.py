@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections import defaultdict
+from collections.abc import Iterable
 from datetime import datetime, timezone
 import json
 import uuid
@@ -8,9 +10,18 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.database import QuestionAnalysisRun, QuestionRiskResult
+from app.models.ai_analysis import AIAnalysisQuestionRowRecord, AIAnalysisRunRecord, AIAnalysisViewRecord
+from app.models.database import (
+    AssessmentResponse,
+    QuestionAnalysisRun,
+    QuestionDefinition,
+    QuestionOption,
+    QuestionRiskResult,
+    QuestionnaireVersion,
+    SarAssessment,
+)
 from app.models.dto import ComputedQuestionRisk, StoredAnalysisSnapshot
-from app.models.enums import AnalysisRunStatus, ExecutiveSummaryStatus, RiskLevel
+from app.models.enums import AnalysisRunStatus, ExecutiveSummaryStatus, QuestionnaireType, RiskLevel
 
 SUCCESSFUL_RUN_STATUSES = (
     AnalysisRunStatus.COMPLETED.value,
@@ -19,6 +30,147 @@ SUCCESSFUL_RUN_STATUSES = (
 
 
 class AnalysisRepository:
+    async def load_ai_analysis_view(
+        self,
+        session: AsyncSession,
+        assessment_id: uuid.UUID,
+    ) -> AIAnalysisViewRecord | None:
+        normalized_assessment_id = self._coerce_uuid(assessment_id)
+        assessment = await session.get(SarAssessment, normalized_assessment_id)
+        if assessment is None:
+            return None
+
+        latest_run = (
+            await session.execute(
+                select(QuestionAnalysisRun)
+                .where(
+                    QuestionAnalysisRun.assessment_id == normalized_assessment_id,
+                    QuestionAnalysisRun.status.in_(SUCCESSFUL_RUN_STATUSES),
+                )
+                .order_by(QuestionAnalysisRun.created_at.desc(), QuestionAnalysisRun.id.desc())
+            )
+        ).scalars().first()
+
+        version = (
+            await session.execute(
+                select(QuestionnaireVersion)
+                .where(
+                    QuestionnaireVersion.questionnaire_type == QuestionnaireType.TRIAGE.value,
+                    QuestionnaireVersion.status == "active",
+                )
+                .order_by(QuestionnaireVersion.created_at.desc(), QuestionnaireVersion.id.desc())
+            )
+        ).scalars().first()
+
+        if version is None:
+            return AIAnalysisViewRecord(
+                assessment_id=normalized_assessment_id,
+                latest_run=self._to_ai_analysis_run_record(latest_run),
+                questions=[],
+            )
+
+        questions = (
+            await session.execute(
+                select(QuestionDefinition)
+                .where(
+                    QuestionDefinition.questionnaire_version_id == version.id,
+                    QuestionDefinition.is_visible.is_(True),
+                )
+                .order_by(QuestionDefinition.question_order.asc(), QuestionDefinition.id.asc())
+            )
+        ).scalars().all()
+
+        if not questions:
+            return AIAnalysisViewRecord(
+                assessment_id=normalized_assessment_id,
+                latest_run=self._to_ai_analysis_run_record(latest_run),
+                questions=[],
+            )
+
+        question_ids = [question.id for question in questions]
+        responses = (
+            await session.execute(
+                select(AssessmentResponse)
+                .where(
+                    AssessmentResponse.assessment_id == normalized_assessment_id,
+                    AssessmentResponse.question_id.in_(question_ids),
+                )
+                .order_by(AssessmentResponse.created_at.asc(), AssessmentResponse.id.asc())
+            )
+        ).scalars().all()
+        responses_by_question_id = {response.question_id: response for response in responses}
+
+        options = (
+            await session.execute(
+                select(QuestionOption)
+                .where(QuestionOption.question_id.in_(question_ids))
+                .order_by(QuestionOption.display_order.asc(), QuestionOption.id.asc())
+            )
+        ).scalars().all()
+        options_by_question_id: dict[uuid.UUID, list[QuestionOption]] = defaultdict(list)
+        for option in options:
+            options_by_question_id[option.question_id].append(option)
+
+        results_by_response_id: dict[uuid.UUID, QuestionRiskResult] = {}
+        if latest_run is not None:
+            results = (
+                await session.execute(
+                    select(QuestionRiskResult)
+                    .where(QuestionRiskResult.analysis_run_id == latest_run.id)
+                    .order_by(QuestionRiskResult.created_at.asc(), QuestionRiskResult.id.asc())
+                )
+            ).scalars().all()
+            results_by_response_id = {result.response_id: result for result in results}
+
+        rows: list[AIAnalysisQuestionRowRecord] = []
+        for question in questions:
+            response = responses_by_question_id.get(question.id)
+            selected_option = (
+                self._match_selected_option(
+                    options_by_question_id.get(question.id, []),
+                    self._extract_candidate_values(response.answer_value),
+                )
+                if response is not None
+                else None
+            )
+            result = results_by_response_id.get(response.id) if response is not None else None
+
+            rows.append(
+                AIAnalysisQuestionRowRecord(
+                    question_id=question.id,
+                    question_number=question.question_code,
+                    question_text=question.question_text,
+                    domain=question.risk_domain,
+                    response_id=response.id if response is not None else None,
+                    selected_option_id=selected_option.id if selected_option is not None else None,
+                    answer_value=response.answer_value if response is not None else None,
+                    option_risk_band=selected_option.risk_band if selected_option is not None else None,
+                    option_risk_weight=(
+                        float(selected_option.risk_weight)
+                        if selected_option is not None and selected_option.risk_weight is not None
+                        else None
+                    ),
+                    option_why_it_matters=selected_option.why_it_matters if selected_option is not None else None,
+                    option_risk_signal=selected_option.risk_signal if selected_option is not None else None,
+                    result_risk_level=result.risk_level if result is not None else None,
+                    result_risk_score=(
+                        float(result.risk_score) if result is not None and result.risk_score is not None else None
+                    ),
+                    result_risk_impact=result.risk_impact if result is not None else None,
+                    result_explanation=result.explanation if result is not None else None,
+                    result_confidence=(
+                        float(result.confidence) if result is not None and result.confidence is not None else None
+                    ),
+                    reviewer_remarks=response.reviewer_remarks if response is not None else None,
+                )
+            )
+
+        return AIAnalysisViewRecord(
+            assessment_id=normalized_assessment_id,
+            latest_run=self._to_ai_analysis_run_record(latest_run),
+            questions=rows,
+        )
+
     async def get_latest_completed_snapshot(
         self,
         session: AsyncSession,
@@ -239,6 +391,55 @@ class AnalysisRepository:
             return float(value)
         except (TypeError, ValueError):
             return 0.0
+
+    @staticmethod
+    def _extract_candidate_values(answer_value: object | None) -> list[str]:
+        if isinstance(answer_value, str):
+            return [answer_value] if answer_value else []
+
+        if isinstance(answer_value, dict):
+            values: list[str] = []
+            for key in ("optionCode", "option_code", "selectedResponse", "optionLabel", "option_label", "value"):
+                values.extend(AnalysisRepository._coerce_strings(answer_value.get(key)))
+            return list(dict.fromkeys(values))
+
+        if isinstance(answer_value, list):
+            return [value for value in answer_value if isinstance(value, str) and value]
+
+        return []
+
+    @staticmethod
+    def _coerce_strings(value: object) -> list[str]:
+        if isinstance(value, str):
+            return [value] if value else []
+        if isinstance(value, Iterable) and not isinstance(value, (str, bytes, dict)):
+            return [item for item in value if isinstance(item, str) and item]
+        return []
+
+    @staticmethod
+    def _match_selected_option(options: list[QuestionOption], candidate_values: list[str]) -> QuestionOption | None:
+        for candidate in candidate_values:
+            for option in options:
+                if option.option_code == candidate:
+                    return option
+            for option in options:
+                if option.option_label == candidate:
+                    return option
+        return None
+
+    @staticmethod
+    def _to_ai_analysis_run_record(run: QuestionAnalysisRun | None) -> AIAnalysisRunRecord | None:
+        if run is None:
+            return None
+        return AIAnalysisRunRecord(
+            analysis_run_id=run.id,
+            status=AnalysisRunStatus(run.status),
+            created_at=run.created_at,
+        )
+
+    @staticmethod
+    def _coerce_uuid(value: uuid.UUID | str) -> uuid.UUID:
+        return value if isinstance(value, uuid.UUID) else uuid.UUID(value)
 
     async def upsert_question_risk_results(
         self,
