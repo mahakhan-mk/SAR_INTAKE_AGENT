@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 
-from openai import APITimeoutError, AzureOpenAI
-from pydantic import BaseModel, ValidationError
+from openai import APITimeoutError, OpenAI
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from app.config import Settings, get_settings
 from app.llm.executive_summary import ExecutiveSummaryPromptConfig
+
+logger = logging.getLogger(__name__)
 
 
 class AzureOpenAIConfigurationError(RuntimeError):
@@ -26,6 +29,8 @@ class AzureSummaryTimeoutError(AzureSummaryRequestError):
 
 
 class ExecutiveSummaryOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     summary: str
 
 
@@ -35,7 +40,7 @@ class AzureOpenAIClientSettings:
     api_key: str
     deployment: str
     timeout_seconds: float
-    api_version: str
+    api_version: str | None
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "AzureOpenAIClientSettings":
@@ -45,7 +50,6 @@ class AzureOpenAIClientSettings:
                 ("AZURE_OPENAI_ENDPOINT", settings.azure_openai_endpoint),
                 ("AZURE_OPENAI_API_KEY", settings.azure_openai_api_key),
                 ("AZURE_OPENAI_DEPLOYMENT", settings.azure_openai_deployment),
-                ("AZURE_OPENAI_API_VERSION", settings.azure_openai_api_version),
             ]
             if not value
         ]
@@ -59,22 +63,25 @@ class AzureOpenAIClientSettings:
             api_key=settings.azure_openai_api_key or "",
             deployment=settings.azure_openai_deployment or "",
             timeout_seconds=settings.azure_openai_timeout_seconds,
-            api_version=settings.azure_openai_api_version or "",
+            api_version=settings.azure_openai_api_version,
         )
+
+    @property
+    def base_url(self) -> str:
+        return f"{self.endpoint.rstrip('/')}/openai/v1/"
 
 
 class AzureExecutiveSummaryClient:
     def __init__(
         self,
         settings: AzureOpenAIClientSettings | None = None,
-        client: AzureOpenAI | None = None,
+        client: OpenAI | None = None,
     ) -> None:
         resolved_settings = settings or AzureOpenAIClientSettings.from_settings(get_settings())
         self.settings = resolved_settings
-        self._client = client or AzureOpenAI(
+        self._client = client or OpenAI(
             api_key=resolved_settings.api_key,
-            api_version=resolved_settings.api_version,
-            azure_endpoint=resolved_settings.endpoint,
+            base_url=resolved_settings.base_url,
         )
 
     @property
@@ -94,6 +101,12 @@ class AzureExecutiveSummaryClient:
             try:
                 parsed = ExecutiveSummaryOutput.model_validate_json(raw_text)
             except ValidationError as exc:
+                logger.exception(
+                    "Azure OpenAI executive summary response parsing failed for deployment=%s configured_api_version=%s attempt=%s",
+                    self.settings.deployment,
+                    self.settings.api_version or "<none>",
+                    attempt + 1,
+                )
                 last_validation_error = exc
                 if attempt == 0:
                     continue
@@ -120,8 +133,20 @@ class AzureExecutiveSummaryClient:
                 timeout=self.settings.timeout_seconds,
             )
         except APITimeoutError as exc:
+            logger.exception(
+                "Azure OpenAI executive summary request timed out for deployment=%s base_url=%s configured_api_version=%s",
+                self.settings.deployment,
+                self.settings.base_url,
+                self.settings.api_version or "<none>",
+            )
             raise AzureSummaryTimeoutError("Azure OpenAI request timed out.") from exc
         except Exception as exc:
+            logger.exception(
+                "Azure OpenAI executive summary request failed for deployment=%s base_url=%s configured_api_version=%s",
+                self.settings.deployment,
+                self.settings.base_url,
+                self.settings.api_version or "<none>",
+            )
             raise AzureSummaryRequestError("Azure OpenAI request failed.") from exc
 
         output_text = getattr(response, "output_text", None)
