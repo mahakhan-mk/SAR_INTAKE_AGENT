@@ -46,6 +46,92 @@ update
     kpmg_sar.sar_assessments for each row execute function kpmg_sar.set_updated_at();
 
 
+-- kpmg_sar.assessment_documents definition
+
+-- Drop table
+
+-- DROP TABLE kpmg_sar.assessment_documents;
+
+CREATE TABLE kpmg_sar.assessment_documents (
+	id uuid DEFAULT gen_random_uuid() NOT NULL,
+	assessment_id uuid NOT NULL,
+	original_filename text NOT NULL,
+	content_type text NOT NULL,
+	file_size_bytes int8 NOT NULL,
+	sha256 text NOT NULL,
+	storage_container text NOT NULL,
+	storage_key text NOT NULL,
+	upload_source text NOT NULL,
+	system_document_type text DEFAULT 'Unclassified'::text NOT NULL,
+	uploaded_by text NULL,
+	created_at timestamptz DEFAULT now() NOT NULL,
+	deleted_at timestamptz NULL,
+	deleted_by text NULL,
+	metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+	CONSTRAINT assessment_documents_file_size_check CHECK ((file_size_bytes > 0)),
+	CONSTRAINT assessment_documents_pkey PRIMARY KEY (id),
+	CONSTRAINT assessment_documents_storage_key_unique UNIQUE (storage_container, storage_key),
+	CONSTRAINT assessment_documents_system_type_check CHECK ((system_document_type = ANY (ARRAY['SOC 2 Type II'::text, 'ISO 27001'::text, 'Architecture Diagram'::text, 'Unclassified'::text]))),
+	CONSTRAINT assessment_documents_upload_source_check CHECK ((upload_source = ANY (ARRAY['sar_request'::text, 'checklist_row'::text, 'checklist_unclassified'::text]))),
+	CONSTRAINT assessment_documents_assessment_id_fkey FOREIGN KEY (assessment_id) REFERENCES kpmg_sar.sar_assessments(id) ON DELETE CASCADE
+);
+CREATE INDEX idx_assessment_documents_active_type ON kpmg_sar.assessment_documents USING btree (assessment_id, system_document_type) WHERE (deleted_at IS NULL);
+CREATE INDEX idx_assessment_documents_assessment ON kpmg_sar.assessment_documents USING btree (assessment_id, created_at DESC);
+CREATE UNIQUE INDEX uq_assessment_documents_active_hash ON kpmg_sar.assessment_documents USING btree (assessment_id, sha256) WHERE (deleted_at IS NULL);
+
+
+-- kpmg_sar.document_checklist_runs definition
+
+-- Drop table
+
+-- DROP TABLE kpmg_sar.document_checklist_runs;
+
+CREATE TABLE kpmg_sar.document_checklist_runs (
+	id uuid DEFAULT gen_random_uuid() NOT NULL,
+	assessment_id uuid NOT NULL,
+	status text DEFAULT 'draft'::text NOT NULL,
+	summary_text text NULL,
+	summary_status text DEFAULT 'not_generated'::text NOT NULL,
+	summary_model text NULL,
+	summary_prompt_version text NULL,
+	summary_input_hash text NULL,
+	summary_generated_at timestamptz NULL,
+	input_snapshot jsonb DEFAULT '{}'::jsonb NOT NULL,
+	limitations jsonb DEFAULT '[]'::jsonb NOT NULL,
+	error_summary text NULL,
+	created_at timestamptz DEFAULT now() NOT NULL,
+	submitted_at timestamptz NULL,
+	submitted_by text NULL,
+	CONSTRAINT document_checklist_runs_pkey PRIMARY KEY (id),
+	CONSTRAINT document_checklist_runs_status_check CHECK ((status = ANY (ARRAY['draft'::text, 'draft_with_limitations'::text, 'submitted'::text, 'failed'::text]))),
+	CONSTRAINT document_checklist_runs_submission_check CHECK ((((status = 'submitted'::text) AND (submitted_at IS NOT NULL)) OR (status <> 'submitted'::text))),
+	CONSTRAINT document_checklist_runs_summary_status_check CHECK ((summary_status = ANY (ARRAY['not_generated'::text, 'generated'::text, 'fallback'::text, 'failed'::text]))),
+	CONSTRAINT document_checklist_runs_assessment_id_fkey FOREIGN KEY (assessment_id) REFERENCES kpmg_sar.sar_assessments(id) ON DELETE CASCADE
+);
+CREATE INDEX idx_document_checklist_runs_latest ON kpmg_sar.document_checklist_runs USING btree (assessment_id, created_at DESC, id DESC);
+
+
+-- kpmg_sar.document_classification_reviews definition
+
+-- Drop table
+
+-- DROP TABLE kpmg_sar.document_classification_reviews;
+
+CREATE TABLE kpmg_sar.document_classification_reviews (
+	id uuid DEFAULT gen_random_uuid() NOT NULL,
+	document_id uuid NOT NULL,
+	document_type text NOT NULL,
+	reason text NOT NULL,
+	reviewed_by text NULL,
+	created_at timestamptz DEFAULT now() NOT NULL,
+	CONSTRAINT document_classification_reviews_pkey PRIMARY KEY (id),
+	CONSTRAINT document_classification_reviews_reason_check CHECK ((btrim(reason) <> ''::text)),
+	CONSTRAINT document_classification_reviews_type_check CHECK ((document_type = ANY (ARRAY['SOC 2 Type II'::text, 'ISO 27001'::text, 'Architecture Diagram'::text]))),
+	CONSTRAINT document_classification_reviews_document_id_fkey FOREIGN KEY (document_id) REFERENCES kpmg_sar.assessment_documents(id) ON DELETE CASCADE
+);
+CREATE INDEX idx_document_classification_reviews_latest ON kpmg_sar.document_classification_reviews USING btree (document_id, created_at DESC, id DESC);
+
+
 -- kpmg_sar.question_analysis_runs definition
 
 -- Drop table
@@ -133,6 +219,140 @@ CREATE TABLE kpmg_sar.question_options (
 CREATE INDEX idx_question_options_question ON kpmg_sar.question_options USING btree (question_id);
 
 
+-- kpmg_sar.vendor_reputation_jobs definition
+
+-- Drop table
+
+-- DROP TABLE kpmg_sar.vendor_reputation_jobs;
+
+CREATE TABLE kpmg_sar.vendor_reputation_jobs (
+	id uuid DEFAULT gen_random_uuid() NOT NULL,
+	sar_id text NULL,
+	vendor_name text NOT NULL,
+	product_name text NULL,
+	pipeline_profile text DEFAULT 'vendor_reputation_default'::text NOT NULL,
+	status text DEFAULT 'queued'::text NOT NULL,
+	requires_analyst_review bool DEFAULT true NOT NULL,
+	requested_by text NULL,
+	created_at timestamptz DEFAULT now() NOT NULL,
+	started_at timestamptz NULL,
+	completed_at timestamptz NULL,
+	updated_at timestamptz DEFAULT now() NOT NULL,
+	error_summary text NULL,
+	limitations jsonb DEFAULT '[]'::jsonb NOT NULL,
+	metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+	assessment_id uuid NULL,
+	CONSTRAINT vendor_reputation_jobs_pkey PRIMARY KEY (id),
+	CONSTRAINT vendor_reputation_jobs_status_check CHECK ((status = ANY (ARRAY['queued'::text, 'running'::text, 'awaiting_hitl_review'::text, 'review_submitted'::text, 'completed'::text, 'completed_with_limitations'::text, 'failed'::text]))),
+	CONSTRAINT fk_vendor_reputation_jobs_assessment FOREIGN KEY (assessment_id) REFERENCES kpmg_sar.sar_assessments(id) ON DELETE SET NULL
+);
+CREATE INDEX idx_vendor_reputation_jobs_assessment ON kpmg_sar.vendor_reputation_jobs USING btree (assessment_id);
+CREATE INDEX idx_vendor_reputation_jobs_created_at ON kpmg_sar.vendor_reputation_jobs USING btree (created_at DESC);
+CREATE INDEX idx_vendor_reputation_jobs_sar_id ON kpmg_sar.vendor_reputation_jobs USING btree (sar_id);
+CREATE INDEX idx_vendor_reputation_jobs_status ON kpmg_sar.vendor_reputation_jobs USING btree (status);
+CREATE INDEX idx_vendor_reputation_jobs_vendor_product ON kpmg_sar.vendor_reputation_jobs USING btree (vendor_name, product_name);
+
+-- Table Triggers
+
+create trigger trg_vendor_reputation_jobs_updated_at before
+update
+    on
+    kpmg_sar.vendor_reputation_jobs for each row execute function kpmg_sar.set_updated_at();
+
+
+-- kpmg_sar.vendor_reputation_outbox_events definition
+
+-- Drop table
+
+-- DROP TABLE kpmg_sar.vendor_reputation_outbox_events;
+
+CREATE TABLE kpmg_sar.vendor_reputation_outbox_events (
+	event_id uuid NOT NULL,
+	job_id uuid NOT NULL,
+	event_type text NOT NULL,
+	payload jsonb DEFAULT '{}'::jsonb NOT NULL,
+	status text DEFAULT 'pending'::text NOT NULL,
+	attempt_count int4 DEFAULT 0 NOT NULL,
+	available_at timestamptz DEFAULT now() NOT NULL,
+	published_at timestamptz NULL,
+	last_error text NULL,
+	created_at timestamptz DEFAULT now() NOT NULL,
+	updated_at timestamptz DEFAULT now() NOT NULL,
+	CONSTRAINT vendor_reputation_outbox_attempt_count_check CHECK ((attempt_count >= 0)),
+	CONSTRAINT vendor_reputation_outbox_events_pkey PRIMARY KEY (event_id),
+	CONSTRAINT vendor_reputation_outbox_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'publishing'::text, 'published'::text, 'failed'::text]))),
+	CONSTRAINT vendor_reputation_outbox_events_job_id_fkey FOREIGN KEY (job_id) REFERENCES kpmg_sar.vendor_reputation_jobs(id) ON DELETE CASCADE
+);
+CREATE INDEX idx_vendor_reputation_outbox_polling ON kpmg_sar.vendor_reputation_outbox_events USING btree (status, available_at);
+
+
+-- kpmg_sar.vendor_reputation_rows definition
+
+-- Drop table
+
+-- DROP TABLE kpmg_sar.vendor_reputation_rows;
+
+CREATE TABLE kpmg_sar.vendor_reputation_rows (
+	id uuid DEFAULT gen_random_uuid() NOT NULL,
+	job_id uuid NOT NULL,
+	row_order int4 DEFAULT 0 NOT NULL,
+	"source" text NOT NULL,
+	category text NOT NULL,
+	sentiment text NOT NULL,
+	ai_interpretation text NOT NULL,
+	risk_impact text NOT NULL,
+	confidence text NOT NULL,
+	sources jsonb DEFAULT '[]'::jsonb NOT NULL,
+	limitations jsonb DEFAULT '[]'::jsonb NOT NULL,
+	metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+	generation_method text NULL,
+	evidence_basis text NULL,
+	requires_analyst_review bool DEFAULT true NOT NULL,
+	created_at timestamptz DEFAULT now() NOT NULL,
+	CONSTRAINT vendor_reputation_row_category_check CHECK ((category = ANY (ARRAY['Trust Center'::text, 'Compliance & Certifications'::text, 'Vulnerabilities (NVD/CVE)'::text, 'Exposure (CISA KEV)'::text, 'Exploit Likelihood (EPSS)'::text, 'News & Media'::text]))),
+	CONSTRAINT vendor_reputation_row_evidence_basis_check CHECK (((evidence_basis IS NULL) OR (evidence_basis = ANY (ARRAY['scraped_evidence'::text, 'web_search_citations'::text, 'structured_feed'::text, 'news_search_citations'::text, 'no_evidence'::text])))),
+	CONSTRAINT vendor_reputation_row_generation_method_check CHECK (((generation_method IS NULL) OR (generation_method = ANY (ARRAY['nano_synthesis'::text, 'deterministic_fallback'::text, 'web_search_fallback'::text, 'neutral_no_evidence_fallback'::text, 'deterministic_mapping'::text, 'llm_extraction'::text])))),
+	CONSTRAINT vendor_reputation_row_sentiment_check CHECK ((sentiment = ANY (ARRAY['Positive'::text, 'Neutral'::text, 'Negative'::text]))),
+	CONSTRAINT vendor_reputation_row_unique_category UNIQUE (job_id, category),
+	CONSTRAINT vendor_reputation_rows_pkey PRIMARY KEY (id),
+	CONSTRAINT vendor_reputation_rows_row_order_check CHECK ((row_order >= 0)),
+	CONSTRAINT vendor_reputation_rows_job_id_fkey FOREIGN KEY (job_id) REFERENCES kpmg_sar.vendor_reputation_jobs(id) ON DELETE CASCADE
+);
+CREATE INDEX idx_vendor_reputation_rows_job ON kpmg_sar.vendor_reputation_rows USING btree (job_id, row_order);
+
+
+-- kpmg_sar.vendor_reputation_stream_results definition
+
+-- Drop table
+
+-- DROP TABLE kpmg_sar.vendor_reputation_stream_results;
+
+CREATE TABLE kpmg_sar.vendor_reputation_stream_results (
+	id uuid DEFAULT gen_random_uuid() NOT NULL,
+	job_id uuid NOT NULL,
+	stream_type text NOT NULL,
+	status text DEFAULT 'not_run'::text NOT NULL,
+	started_at timestamptz NULL,
+	completed_at timestamptz NULL,
+	evidence_count int4 DEFAULT 0 NOT NULL,
+	failed_url_count int4 DEFAULT 0 NOT NULL,
+	failed_cve_count int4 DEFAULT 0 NOT NULL,
+	limitations jsonb DEFAULT '[]'::jsonb NOT NULL,
+	errors jsonb DEFAULT '[]'::jsonb NOT NULL,
+	metrics jsonb DEFAULT '{}'::jsonb NOT NULL,
+	created_at timestamptz DEFAULT now() NOT NULL,
+	CONSTRAINT vendor_reputation_stream_results_evidence_count_check CHECK ((evidence_count >= 0)),
+	CONSTRAINT vendor_reputation_stream_results_failed_cve_count_check CHECK ((failed_cve_count >= 0)),
+	CONSTRAINT vendor_reputation_stream_results_failed_url_count_check CHECK ((failed_url_count >= 0)),
+	CONSTRAINT vendor_reputation_stream_results_pkey PRIMARY KEY (id),
+	CONSTRAINT vendor_reputation_stream_status_check CHECK ((status = ANY (ARRAY['not_run'::text, 'running'::text, 'completed'::text, 'completed_with_limitations'::text, 'failed'::text]))),
+	CONSTRAINT vendor_reputation_stream_type_check CHECK ((stream_type = ANY (ARRAY['web'::text, 'news'::text, 'structured'::text]))),
+	CONSTRAINT vendor_reputation_stream_unique UNIQUE (job_id, stream_type),
+	CONSTRAINT vendor_reputation_stream_results_job_id_fkey FOREIGN KEY (job_id) REFERENCES kpmg_sar.vendor_reputation_jobs(id) ON DELETE CASCADE
+);
+CREATE INDEX idx_vendor_reputation_stream_results_job ON kpmg_sar.vendor_reputation_stream_results USING btree (job_id);
+
+
 -- kpmg_sar.assessment_responses definition
 
 -- Drop table
@@ -166,6 +386,30 @@ update
     kpmg_sar.assessment_responses for each row execute function kpmg_sar.set_updated_at();
 
 
+-- kpmg_sar.document_checklist_items definition
+
+-- Drop table
+
+-- DROP TABLE kpmg_sar.document_checklist_items;
+
+CREATE TABLE kpmg_sar.document_checklist_items (
+	id uuid DEFAULT gen_random_uuid() NOT NULL,
+	checklist_run_id uuid NOT NULL,
+	document_type text NOT NULL,
+	base_verdict text NOT NULL,
+	item_order int2 NOT NULL,
+	created_at timestamptz DEFAULT now() NOT NULL,
+	CONSTRAINT document_checklist_items_order_check CHECK (((item_order >= 1) AND (item_order <= 3))),
+	CONSTRAINT document_checklist_items_pkey PRIMARY KEY (id),
+	CONSTRAINT document_checklist_items_type_check CHECK ((document_type = ANY (ARRAY['SOC 2 Type II'::text, 'ISO 27001'::text, 'Architecture Diagram'::text]))),
+	CONSTRAINT document_checklist_items_verdict_check CHECK ((base_verdict = ANY (ARRAY['Required'::text, 'Recommended'::text, 'N/A'::text]))),
+	CONSTRAINT uq_document_checklist_items_run_order UNIQUE (checklist_run_id, item_order),
+	CONSTRAINT uq_document_checklist_items_run_type UNIQUE (checklist_run_id, document_type),
+	CONSTRAINT document_checklist_items_checklist_run_id_fkey FOREIGN KEY (checklist_run_id) REFERENCES kpmg_sar.document_checklist_runs(id) ON DELETE CASCADE
+);
+CREATE INDEX idx_document_checklist_items_run ON kpmg_sar.document_checklist_items USING btree (checklist_run_id, item_order);
+
+
 -- kpmg_sar.question_risk_results definition
 
 -- Drop table
@@ -194,3 +438,204 @@ CREATE TABLE kpmg_sar.question_risk_results (
 );
 CREATE INDEX idx_question_risk_results_analysis_run ON kpmg_sar.question_risk_results USING btree (analysis_run_id);
 CREATE INDEX idx_question_risk_results_response ON kpmg_sar.question_risk_results USING btree (response_id);
+
+
+-- kpmg_sar.vendor_reputation_evidence_items definition
+
+-- Drop table
+
+-- DROP TABLE kpmg_sar.vendor_reputation_evidence_items;
+
+CREATE TABLE kpmg_sar.vendor_reputation_evidence_items (
+	id uuid DEFAULT gen_random_uuid() NOT NULL,
+	job_id uuid NOT NULL,
+	stream_result_id uuid NULL,
+	parent_evidence_id uuid NULL,
+	stream_type text NOT NULL,
+	source_system text NOT NULL,
+	processing_method text NOT NULL,
+	evidence_type text NOT NULL,
+	evidence_label text NULL,
+	source_url text NULL,
+	source_title text NULL,
+	source_section text NULL,
+	external_ref text NULL,
+	claim text NULL,
+	evidence_text text NULL,
+	confidence text NULL,
+	requires_analyst_review bool DEFAULT true NOT NULL,
+	evidence_hash text NULL,
+	limitations jsonb DEFAULT '[]'::jsonb NOT NULL,
+	metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+	created_at timestamptz DEFAULT now() NOT NULL,
+	CONSTRAINT vendor_reputation_evidence_items_pkey PRIMARY KEY (id),
+	CONSTRAINT vendor_reputation_evidence_processing_check CHECK ((processing_method = ANY (ARRAY['deterministic_mapping'::text, 'llm_extraction'::text, 'llm_synthesis'::text, 'web_search_synthesis'::text]))),
+	CONSTRAINT vendor_reputation_evidence_source_system_check CHECK ((source_system = ANY (ARRAY['trust_center'::text, 'compliance_certifications'::text, 'news'::text, 'nvd'::text, 'cisa_kev'::text, 'epss'::text]))),
+	CONSTRAINT vendor_reputation_evidence_stream_check CHECK ((stream_type = ANY (ARRAY['web'::text, 'news'::text, 'structured'::text]))),
+	CONSTRAINT vendor_reputation_evidence_items_job_id_fkey FOREIGN KEY (job_id) REFERENCES kpmg_sar.vendor_reputation_jobs(id) ON DELETE CASCADE,
+	CONSTRAINT vendor_reputation_evidence_items_parent_evidence_id_fkey FOREIGN KEY (parent_evidence_id) REFERENCES kpmg_sar.vendor_reputation_evidence_items(id) ON DELETE SET NULL,
+	CONSTRAINT vendor_reputation_evidence_items_stream_result_id_fkey FOREIGN KEY (stream_result_id) REFERENCES kpmg_sar.vendor_reputation_stream_results(id) ON DELETE SET NULL
+);
+CREATE INDEX idx_vendor_reputation_evidence_items_job ON kpmg_sar.vendor_reputation_evidence_items USING btree (job_id);
+CREATE INDEX idx_vendor_reputation_evidence_items_source_system ON kpmg_sar.vendor_reputation_evidence_items USING btree (job_id, source_system);
+CREATE INDEX idx_vendor_reputation_evidence_items_stream ON kpmg_sar.vendor_reputation_evidence_items USING btree (job_id, stream_type);
+CREATE UNIQUE INDEX uq_vendor_reputation_evidence_hash ON kpmg_sar.vendor_reputation_evidence_items USING btree (job_id, evidence_hash) WHERE (evidence_hash IS NOT NULL);
+
+
+-- kpmg_sar.vendor_reputation_hitl_reviews definition
+
+-- Drop table
+
+-- DROP TABLE kpmg_sar.vendor_reputation_hitl_reviews;
+
+CREATE TABLE kpmg_sar.vendor_reputation_hitl_reviews (
+	id uuid DEFAULT gen_random_uuid() NOT NULL,
+	job_id uuid NOT NULL,
+	trust_center_url text NULL,
+	trust_center_final_url text NULL,
+	trust_center_page_title text NULL,
+	trust_center_extraction_status text NULL,
+	trust_center_scraped_char_count int4 DEFAULT 0 NOT NULL,
+	soc2_auto_status text DEFAULT 'Unknown'::text NOT NULL,
+	soc2_auto_evidence_text text NULL,
+	soc2_auto_confidence text NULL,
+	soc2_reviewer_status text NULL,
+	iso27001_auto_status text DEFAULT 'Unknown'::text NOT NULL,
+	iso27001_auto_evidence_text text NULL,
+	iso27001_auto_confidence text NULL,
+	iso27001_reviewer_status text NULL,
+	reviewer_remarks text NULL,
+	review_status text DEFAULT 'pending'::text NOT NULL,
+	reviewed_by text NULL,
+	reviewed_at timestamptz NULL,
+	limitations jsonb DEFAULT '[]'::jsonb NOT NULL,
+	metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+	created_at timestamptz DEFAULT now() NOT NULL,
+	updated_at timestamptz DEFAULT now() NOT NULL,
+	CONSTRAINT vendor_reputation_hitl_cert_status_check CHECK (((soc2_auto_status = ANY (ARRAY['Available'::text, 'Under NDA'::text, 'Not Available'::text, 'Missing'::text, 'Unknown'::text])) AND (iso27001_auto_status = ANY (ARRAY['Available'::text, 'Under NDA'::text, 'Not Available'::text, 'Missing'::text, 'Unknown'::text])) AND ((soc2_reviewer_status IS NULL) OR (soc2_reviewer_status = ANY (ARRAY['Available'::text, 'Under NDA'::text, 'Not Available'::text, 'Missing'::text, 'Unknown'::text]))) AND ((iso27001_reviewer_status IS NULL) OR (iso27001_reviewer_status = ANY (ARRAY['Available'::text, 'Under NDA'::text, 'Not Available'::text, 'Missing'::text, 'Unknown'::text]))))),
+	CONSTRAINT vendor_reputation_hitl_revie_trust_center_scraped_char_co_check CHECK ((trust_center_scraped_char_count >= 0)),
+	CONSTRAINT vendor_reputation_hitl_review_status_check CHECK ((review_status = ANY (ARRAY['pending'::text, 'verified'::text, 'overridden'::text, 'rejected'::text, 'not_required'::text]))),
+	CONSTRAINT vendor_reputation_hitl_reviews_pkey PRIMARY KEY (id),
+	CONSTRAINT vendor_reputation_hitl_unique_job UNIQUE (job_id),
+	CONSTRAINT vendor_reputation_hitl_reviews_job_id_fkey FOREIGN KEY (job_id) REFERENCES kpmg_sar.vendor_reputation_jobs(id) ON DELETE CASCADE
+);
+CREATE INDEX idx_vendor_reputation_hitl_reviews_job ON kpmg_sar.vendor_reputation_hitl_reviews USING btree (job_id);
+
+-- Table Triggers
+
+create trigger trg_vendor_reputation_hitl_reviews_updated_at before
+update
+    on
+    kpmg_sar.vendor_reputation_hitl_reviews for each row execute function kpmg_sar.set_updated_at();
+
+
+-- kpmg_sar.document_checklist_item_reviews definition
+
+-- Drop table
+
+-- DROP TABLE kpmg_sar.document_checklist_item_reviews;
+
+CREATE TABLE kpmg_sar.document_checklist_item_reviews (
+	id uuid DEFAULT gen_random_uuid() NOT NULL,
+	assessment_id uuid NOT NULL,
+	source_item_id uuid NULL,
+	document_type text NOT NULL,
+	reviewer_verdict text NULL,
+	reason text NULL,
+	reviewed_by text NULL,
+	created_at timestamptz DEFAULT now() NOT NULL,
+	CONSTRAINT document_checklist_item_reviews_pkey PRIMARY KEY (id),
+	CONSTRAINT document_checklist_item_reviews_type_check CHECK ((document_type = ANY (ARRAY['SOC 2 Type II'::text, 'ISO 27001'::text, 'Architecture Diagram'::text]))),
+	CONSTRAINT document_checklist_item_reviews_verdict_check CHECK (((reviewer_verdict IS NULL) OR (reviewer_verdict = ANY (ARRAY['Required'::text, 'Recommended'::text, 'N/A'::text])))),
+	CONSTRAINT document_checklist_item_reviews_assessment_id_fkey FOREIGN KEY (assessment_id) REFERENCES kpmg_sar.sar_assessments(id) ON DELETE CASCADE,
+	CONSTRAINT document_checklist_item_reviews_source_item_id_fkey FOREIGN KEY (source_item_id) REFERENCES kpmg_sar.document_checklist_items(id) ON DELETE SET NULL
+);
+CREATE INDEX idx_document_checklist_item_reviews_latest ON kpmg_sar.document_checklist_item_reviews USING btree (assessment_id, document_type, created_at DESC, id DESC);
+
+
+-- kpmg_sar.vendor_reputation_extraction_runs definition
+
+-- Drop table
+
+-- DROP TABLE kpmg_sar.vendor_reputation_extraction_runs;
+
+CREATE TABLE kpmg_sar.vendor_reputation_extraction_runs (
+	id uuid DEFAULT gen_random_uuid() NOT NULL,
+	job_id uuid NOT NULL,
+	stream_result_id uuid NULL,
+	hitl_review_id uuid NULL,
+	execution_context text NOT NULL,
+	source_category text NULL,
+	source_url text NOT NULL,
+	approved_domain text NULL,
+	final_url text NULL,
+	page_title text NULL,
+	profile_name text NULL,
+	render_mode text NULL,
+	status text NOT NULL,
+	usable_text bool DEFAULT false NOT NULL,
+	failure_reason text NULL,
+	limitations jsonb DEFAULT '[]'::jsonb NOT NULL,
+	fetch_engine_used text NULL,
+	engine_sequence jsonb DEFAULT '[]'::jsonb NOT NULL,
+	final_status_code int4 NULL,
+	total_elapsed_ms int4 NULL,
+	text_char_count int4 DEFAULT 0 NOT NULL,
+	html_char_count int4 DEFAULT 0 NOT NULL,
+	content_sha256 text NULL,
+	quality_score numeric(5, 4) NULL,
+	quality_signals jsonb DEFAULT '[]'::jsonb NOT NULL,
+	policy_decision_id text NULL,
+	metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+	triggered_by text NULL,
+	started_at timestamptz NULL,
+	completed_at timestamptz NULL,
+	retrieved_at timestamptz NULL,
+	created_at timestamptz DEFAULT now() NOT NULL,
+	expires_at timestamptz DEFAULT now() + '30 days'::interval NOT NULL,
+	CONSTRAINT vendor_reputation_extraction_context_check CHECK ((execution_context = ANY (ARRAY['vendor_reputation_web'::text, 'hitl_trust_center_verification'::text]))),
+	CONSTRAINT vendor_reputation_extraction_runs_html_char_count_check CHECK ((html_char_count >= 0)),
+	CONSTRAINT vendor_reputation_extraction_runs_pkey PRIMARY KEY (id),
+	CONSTRAINT vendor_reputation_extraction_runs_quality_score_check CHECK (((quality_score IS NULL) OR ((quality_score >= (0)::numeric) AND (quality_score <= (1)::numeric)))),
+	CONSTRAINT vendor_reputation_extraction_runs_text_char_count_check CHECK ((text_char_count >= 0)),
+	CONSTRAINT vendor_reputation_extraction_runs_total_elapsed_ms_check CHECK (((total_elapsed_ms IS NULL) OR (total_elapsed_ms >= 0))),
+	CONSTRAINT vendor_reputation_extraction_status_check CHECK ((status = ANY (ARRAY['completed'::text, 'completed_with_limitations'::text, 'failed'::text]))),
+	CONSTRAINT vendor_reputation_fetch_engine_check CHECK (((fetch_engine_used IS NULL) OR (fetch_engine_used = ANY (ARRAY['httpx'::text, 'playwright'::text])))),
+	CONSTRAINT vendor_reputation_extraction_runs_hitl_review_id_fkey FOREIGN KEY (hitl_review_id) REFERENCES kpmg_sar.vendor_reputation_hitl_reviews(id) ON DELETE SET NULL,
+	CONSTRAINT vendor_reputation_extraction_runs_job_id_fkey FOREIGN KEY (job_id) REFERENCES kpmg_sar.vendor_reputation_jobs(id) ON DELETE CASCADE,
+	CONSTRAINT vendor_reputation_extraction_runs_stream_result_id_fkey FOREIGN KEY (stream_result_id) REFERENCES kpmg_sar.vendor_reputation_stream_results(id) ON DELETE SET NULL
+);
+CREATE INDEX idx_vendor_reputation_extraction_runs_context ON kpmg_sar.vendor_reputation_extraction_runs USING btree (execution_context);
+CREATE INDEX idx_vendor_reputation_extraction_runs_expires_at ON kpmg_sar.vendor_reputation_extraction_runs USING btree (expires_at);
+CREATE INDEX idx_vendor_reputation_extraction_runs_hitl ON kpmg_sar.vendor_reputation_extraction_runs USING btree (hitl_review_id);
+CREATE INDEX idx_vendor_reputation_extraction_runs_job ON kpmg_sar.vendor_reputation_extraction_runs USING btree (job_id);
+
+
+-- kpmg_sar.vendor_reputation_extraction_attempts definition
+
+-- Drop table
+
+-- DROP TABLE kpmg_sar.vendor_reputation_extraction_attempts;
+
+CREATE TABLE kpmg_sar.vendor_reputation_extraction_attempts (
+	id uuid DEFAULT gen_random_uuid() NOT NULL,
+	extraction_run_id uuid NOT NULL,
+	attempt_order int4 NOT NULL,
+	engine text NOT NULL,
+	attempt_status text NOT NULL,
+	reason text NULL,
+	error_message text NULL,
+	status_code int4 NULL,
+	elapsed_ms int4 NULL,
+	final_url text NULL,
+	metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+	created_at timestamptz DEFAULT now() NOT NULL,
+	CONSTRAINT vendor_reputation_attempt_engine_check CHECK ((engine = ANY (ARRAY['httpx'::text, 'playwright'::text]))),
+	CONSTRAINT vendor_reputation_attempt_status_check CHECK ((attempt_status = ANY (ARRAY['success'::text, 'failed'::text, 'skipped'::text, 'superseded'::text]))),
+	CONSTRAINT vendor_reputation_attempt_unique_order UNIQUE (extraction_run_id, attempt_order),
+	CONSTRAINT vendor_reputation_extraction_attempts_attempt_order_check CHECK ((attempt_order >= 1)),
+	CONSTRAINT vendor_reputation_extraction_attempts_elapsed_ms_check CHECK (((elapsed_ms IS NULL) OR (elapsed_ms >= 0))),
+	CONSTRAINT vendor_reputation_extraction_attempts_pkey PRIMARY KEY (id),
+	CONSTRAINT vendor_reputation_extraction_attempts_extraction_run_id_fkey FOREIGN KEY (extraction_run_id) REFERENCES kpmg_sar.vendor_reputation_extraction_runs(id) ON DELETE CASCADE
+);
+CREATE INDEX idx_vendor_reputation_extraction_attempts_run ON kpmg_sar.vendor_reputation_extraction_attempts USING btree (extraction_run_id);
