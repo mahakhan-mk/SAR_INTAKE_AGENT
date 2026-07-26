@@ -98,12 +98,11 @@ async def add_question_with_options(
         questionnaire_version_id=questionnaire_version_id,
         question_code=f"question-{uuid.uuid4()}",
         question_text=question_text or f"{risk_domain} question",
-        response_type=response_type or ("single_select" if options is None or options else "text"),
+        response_type=response_type or "single_select",
         risk_domain=risk_domain,
         is_required=is_required,
         section_code="triage",
         question_order=question_order,
-        is_visible=is_visible,
     )
     question.why_it_matters = why_it_matters
     session.add(question)

@@ -7,7 +7,7 @@ import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.errors import AssessmentNotFoundError
+from app.api.errors import AnalysisRunNotFoundError, AnalysisRunStatusConflictError, AssessmentNotFoundError
 from app.llm.client import (
     AzureExecutiveSummaryClient,
     AzureSummaryRequestError,
@@ -45,19 +45,24 @@ class ExecutiveSummaryService:
         self,
         session: AsyncSession,
         assessment_id: uuid.UUID,
+        analysis_run_id: uuid.UUID,
         force: bool = False,
     ) -> ExecutiveSummaryGenerateResponseDTO:
+        run = await self.analysis_repository.get_analysis_run_for_assessment(session, assessment_id, analysis_run_id)
+        if run is None:
+            raise AnalysisRunNotFoundError()
+
+        if run.status not in {
+            AnalysisRunStatus.COMPLETED.value,
+            AnalysisRunStatus.COMPLETED_WITH_LIMITATIONS.value,
+        }:
+            raise AnalysisRunStatusConflictError(run.status)
+
         assessment = await self.assessment_repository.get_assessment(session, assessment_id)
         if assessment is None:
             raise AssessmentNotFoundError()
 
-        snapshot = await self.analysis_repository.get_latest_completed_snapshot(session, assessment_id)
-        if snapshot is None:
-            await self.inherent_risk_service.create_analysis_run(session, assessment_id, force=False)
-            snapshot = await self.analysis_repository.get_latest_completed_snapshot(session, assessment_id)
-
-        if snapshot is None:
-            raise RuntimeError("A completed inherent-risk analysis run is required before generating the executive summary.")
+        snapshot = await self.analysis_repository.get_snapshot_for_run(session, run)
 
         input_payload = self._build_input_payload(assessment, snapshot)
         input_hash = self._build_input_hash(input_payload)

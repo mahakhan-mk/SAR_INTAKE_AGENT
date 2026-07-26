@@ -1,337 +1,137 @@
 # API Contracts
 
-Verified against the registered FastAPI app on July 22, 2026 by importing `app.main` and enumerating `APIRoute` instances.
+## Current Implemented Endpoints
 
-## Registered Routes
+The current application exposes three inherent-risk endpoints from [app/api/v1/inherent_risk.py](/C:/Users/Lenovo/Documents/SAR_INTAKE_AGENT/app/api/v1/inherent_risk.py):
 
-The current app registers exactly these six API endpoints:
+- `GET /api/v1/assessments/{assessmentId}/inherent-risk`
+- `POST /api/v1/assessments/{assessmentId}/analysis-runs`
+- `POST /api/v1/assessments/{assessmentId}/analysis-runs/{analysisRunId}/executive-summary`
 
-| Method | Path | Route function | Response DTO |
-| --- | --- | --- | --- |
-| `GET` | `/api/v1/assessments/{assessment_id}/intake` | `app.api.v1.intake.get_intake_overview` | `IntakeOverviewResponseDTO` |
-| `PATCH` | `/api/v1/assessments/{assessment_id}/questions/{question_id}` | `app.api.v1.intake.update_question_response` | `IntakeQuestionUpdateResponseDTO` |
-| `GET` | `/api/v1/assessments/{assessment_id}/inherent-risk` | `app.api.v1.inherent_risk.get_inherent_risk` | `InherentRiskResponseDTO` |
-| `POST` | `/api/v1/assessments/{assessment_id}/analysis-runs` | `app.api.v1.inherent_risk.create_analysis_run` | `AnalysisRunCreateResponseDTO` |
-| `POST` | `/api/v1/assessments/{assessment_id}/inherent-risk/executive-summary` | `app.api.v1.inherent_risk.generate_executive_summary` | `ExecutiveSummaryGenerateResponseDTO` |
-| `GET` | `/api/v1/assessments/{assessment_id}/ai-analysis` | `app.api.v1.ai_analysis.get_ai_analysis` | `AIAnalysisResponseDTO` |
+## GET /api/v1/assessments/{assessmentId}/inherent-risk
 
-## Before Adding A New Endpoint
+Returns the inherent-risk screen projection for the latest successful deterministic run, or creates one on demand when answered triage data exists.
 
-1. Search existing routes.
-2. Inspect service methods.
-3. Inspect DTOs.
-4. Inspect repository methods.
-5. Inspect tests.
-6. Extend existing code instead of duplicating it.
+Response
 
-## Route To Service To Repository Matrix
+```json
+{
+  "assessmentId": "uuid",
+  "analysisRunId": "uuid",
+  "status": "completed",
+  "inherentRisk": {
+    "level": "high",
+    "label": "High",
+    "highRiskQuestionCount": 2,
+    "sourceText": "Derived from SAR triage questions."
+  },
+  "topRiskDrivers": [
+    {
+      "domain": "Business Continuity",
+      "level": "critical"
+    }
+  ],
+  "executiveSummary": {
+    "text": null,
+    "status": "not_generated",
+    "generatedAt": null
+  },
+  "links": {
+    "aiAnalysis": "/api/v1/assessments/{assessmentId}/ai-analysis",
+    "reportPreview": "/api/v1/assessments/{assessmentId}/report-preview"
+  }
+}
+```
 
-| Method | Path | Service method called | Repository methods used | Classification |
-| --- | --- | --- | --- | --- |
-| `GET` | `/api/v1/assessments/{assessment_id}/intake` | `IntakeService.get_intake_overview` | `AssessmentRepository.load_intake_overview` | Retrieval only |
-| `PATCH` | `/api/v1/assessments/{assessment_id}/questions/{question_id}` | `IntakeService.update_question_response` | `AssessmentRepository.get_assessment`, `AssessmentRepository.get_question`, `AssessmentRepository.get_question_option`, `AssessmentRepository.get_question_option_by_label`, `AssessmentRepository.normalize_answer_value`, `ResponseRepository.get_response`, `ResponseRepository.upsert_response` | Retrieval + persistence |
-| `GET` | `/api/v1/assessments/{assessment_id}/ai-analysis` | `AIAnalysisService.get_ai_analysis` | `AnalysisRepository.load_ai_analysis_view` | Retrieval only |
-| `POST` | `/api/v1/assessments/{assessment_id}/analysis-runs` | `InherentRiskService.create_analysis_run` | `AssessmentRepository.get_assessment`, `AssessmentRepository.load_active_triage_question_responses`, `AnalysisRepository.create_analysis_run`, `AnalysisRepository.upsert_question_risk_results` | Scoring + persistence |
-| `GET` | `/api/v1/assessments/{assessment_id}/inherent-risk` | `InherentRiskService.get_inherent_risk_screen` | `AssessmentRepository.get_assessment`, `AnalysisRepository.get_latest_completed_snapshot`, `AssessmentRepository.load_active_triage_question_responses`, `AnalysisRepository.create_analysis_run`, `AnalysisRepository.upsert_question_risk_results` | Retrieval, and may perform scoring + persistence on demand |
-| `POST` | `/api/v1/assessments/{assessment_id}/inherent-risk/executive-summary` | `ExecutiveSummaryService.generate` | `AssessmentRepository.get_assessment`, `AnalysisRepository.get_latest_completed_snapshot`, `InherentRiskService.create_analysis_run`, `AnalysisRepository.update_executive_summary`, `AnalysisRepository.get_analysis_run` | AI + persistence; may also trigger scoring + persistence first |
+Behavior
 
-## Endpoint Details
+- Returns `404` when the assessment does not exist.
+- Reads the latest `question_analysis_runs` row whose status is `completed` or `completed_with_limitations`.
+- Ignores failed runs when selecting the latest snapshot.
+- If no successful run exists and resolved answered triage responses are available, creates a new deterministic run before returning the DTO.
+- If no successful run exists and no resolved triage responses are available, returns `analysisRunId: null`, `status: completed_with_limitations`, and `inherentRisk.level: not_assessed`.
+- Exposes summary status and saved summary text from the selected run.
 
-### GET `/api/v1/assessments/{assessment_id}/intake`
+## POST /api/v1/assessments/{assessmentId}/analysis-runs
 
-- Purpose: Return the intake overview projection for one assessment, including intake sections and visible triage questions.
-- Path fields:
-  - `assessment_id`: `UUID`
-- Query fields:
-  - None
-- Body fields:
-  - None
-- Response DTO: `IntakeOverviewResponseDTO`
-- Service method called: `IntakeService.get_intake_overview`
-- Repository methods used:
-  - `AssessmentRepository.load_intake_overview`
-- Database tables read:
-  - `sar_assessments`
-  - `questionnaire_versions`
-  - `question_definitions`
-  - `assessment_responses`
-  - `question_options`
-- Database tables written:
-  - None
-- Classification:
-  - Scoring: No
-  - AI: No
-  - Persistence: No
-  - Retrieval only: Yes
-- Expected side effects:
-  - None
-- Related tests:
-  - `tests/api/test_intake_api.py`
-  - `tests/unit/test_intake_service.py`
-  - `tests/unit/test_intake_repository.py`
-  - `tests/unit/test_intake_assembler.py`
-  - `tests/unit/test_dto_models.py`
-- Notes:
-  - The registered route exists and is documented here.
-  - The service expects `AssessmentRepository.load_intake_overview`, but that method is not present in the current `app/repositories/assessment_repository.py` file. This is an implementation mismatch, not a route-registration mismatch.
+Creates a new deterministic analysis run and preserves prior runs.
 
-### PATCH `/api/v1/assessments/{assessment_id}/questions/{question_id}`
+Request
 
-- Purpose: Create or update the stored response for a single question.
-- Path fields:
-  - `assessment_id`: `UUID`
-  - `question_id`: `UUID`
-- Query fields:
-  - None
-- Body fields:
-  - `selectedOptionId`: `UUID | null`, optional
-  - `answerValue`: `str | null`, optional
-- Response DTO: `IntakeQuestionUpdateResponseDTO`
-- Service method called: `IntakeService.update_question_response`
-- Repository methods used:
-  - `AssessmentRepository.get_assessment`
-  - `AssessmentRepository.get_question`
-  - `AssessmentRepository.get_question_option`
-  - `AssessmentRepository.get_question_option_by_label`
-  - `AssessmentRepository.normalize_answer_value`
-  - `ResponseRepository.get_response`
-  - `ResponseRepository.upsert_response`
-- Database tables read:
-  - `sar_assessments`
-  - `question_definitions`
-  - `question_options`
-  - `assessment_responses`
-- Database tables written:
-  - `assessment_responses`
-- Classification:
-  - Scoring: No
-  - AI: No
-  - Persistence: Yes
-  - Retrieval only: No
-- Expected side effects:
-  - May insert a new `assessment_responses` row.
-  - May update an existing `assessment_responses` row.
-  - Commits on success and rolls back on failure.
-- Related tests:
-  - `tests/api/test_intake_api.py`
-  - `tests/unit/test_intake_service.py`
-  - `tests/unit/test_response_repository.py`
-  - `tests/unit/test_dto_models.py`
-- Notes:
-  - The request validator rejects an empty body.
-  - If `selectedOptionId` is provided and non-null, the service normalizes `answerValue` to the selected option label.
-  - The registered route exists and is documented here.
-  - The service expects several `AssessmentRepository` helper methods that are not present in the current repository file. This is an implementation mismatch, not a route-registration mismatch.
+```json
+{
+  "force": false
+}
+```
 
-### GET `/api/v1/assessments/{assessment_id}/ai-analysis`
+Response
 
-- Purpose: Return the AI-analysis review projection for visible triage questions plus the latest successful analysis-run summary.
-- Path fields:
-  - `assessment_id`: `UUID`
-- Query fields:
-  - None
-- Body fields:
-  - None
-- Response DTO: `AIAnalysisResponseDTO`
-- Service method called: `AIAnalysisService.get_ai_analysis`
-- Repository methods used:
-  - `AnalysisRepository.load_ai_analysis_view`
-- Database tables read:
-  - `sar_assessments`
-  - `question_analysis_runs`
-  - `questionnaire_versions`
-  - `question_definitions`
-  - `assessment_responses`
-  - `question_options`
-  - `question_risk_results`
-- Database tables written:
-  - None
-- Classification:
-  - Scoring: No
-  - AI: No
-  - Persistence: No
-  - Retrieval only: Yes
-- Expected side effects:
-  - None
-- Related tests:
-  - `tests/unit/test_ai_analysis_api.py`
-  - `tests/unit/test_ai_analysis_service.py`
-  - `tests/unit/test_ai_analysis_repository.py`
-  - `tests/unit/test_ai_analysis_assembler.py`
-  - `tests/unit/test_api_router.py`
-  - `tests/unit/test_main.py`
-- Notes:
-  - The current DTO exposes `questionId`, `questionNumber`, `questionText`, `domain`, `selectedOptionId`, `answerValue`, `riskBand`, `riskScore`, `riskSignal`, `whyItMatters`, and `reviewerRemarks`.
-  - The current route contract does not expose `aiExplanation` or `confidence`.
+```json
+{
+  "analysisRunId": "uuid",
+  "status": "completed_with_limitations"
+}
+```
 
-### POST `/api/v1/assessments/{assessment_id}/analysis-runs`
+Behavior
 
-- Purpose: Create a new deterministic inherent-risk analysis run for the assessment.
-- Path fields:
-  - `assessment_id`: `UUID`
-- Query fields:
-  - None
-- Body fields:
-  - `force`: `bool = false`
-- Response DTO: `AnalysisRunCreateResponseDTO`
-- Service method called: `InherentRiskService.create_analysis_run`
-- Repository methods used:
-  - `AssessmentRepository.get_assessment`
-  - `AssessmentRepository.load_active_triage_question_responses`
-  - `AnalysisRepository.create_analysis_run`
-  - `AnalysisRepository.upsert_question_risk_results`
-- Database tables read:
-  - `sar_assessments`
-  - `questionnaire_versions`
-  - `question_definitions`
-  - `assessment_responses`
-  - `question_options`
-- Database tables written:
-  - `question_analysis_runs`
-  - `question_risk_results`
-- Classification:
-  - Scoring: Yes
-  - AI: No
-  - Persistence: Yes
-  - Retrieval only: No
-- Expected side effects:
-  - Always creates a new `question_analysis_runs` row for an existing assessment.
-  - Persists one `question_risk_results` row per resolved answered triage response.
-  - Preserves prior runs; it does not overwrite the latest successful run.
-  - Commits on success.
-  - On scoring/persistence failure, rolls back the partial transaction, creates a new failed `question_analysis_runs` row, and commits that failed run.
-- Exactly what the existing implementation already does:
-  - Checks that the assessment exists.
-  - Ignores the `force` flag; the current code accepts it but does not branch on it.
-  - Loads active visible scorable triage questions and their answered responses.
-  - Builds deterministic `ComputedQuestionRisk` rows from resolved answers.
-  - Calculates `triage_score` as the sum of resolved risk weights.
-  - Calculates `inherent_score` as a percentage of total resolved weight over total maximum weight.
-  - Uses the configured inherent-risk scoring policy to determine the final `inherent_risk_level`.
-  - Returns `completed` when scoring runs without limitations.
-  - Returns `completed_with_limitations` when required questions are unanswered, stored answers cannot be resolved to configured options, or there are no scorable answered triage responses.
-  - Returns `failed` if persistence fails after scoring.
-  - Returns the newly created analysis-run ID in `analysisRunId`.
-- Related tests:
-  - `tests/api/test_inherent_risk_api.py`
-  - `tests/unit/test_inherent_risk_service.py`
-  - `tests/unit/test_executive_summary_service.py`
+- Returns `404` when the assessment does not exist.
+- Always creates a new `question_analysis_runs` row.
+- Persists one `question_risk_results` row for each resolved answered triage response.
+- Uses scoring rule version `inherent-risk-v1-percentage`.
+- Sets run status to `completed` or `completed_with_limitations` based on required-question coverage and response resolution.
+- Sets run status to `failed` and persists the failure when database persistence raises an exception.
+- Accepts `force`, but the current implementation does not branch on that field.
 
-### GET `/api/v1/assessments/{assessment_id}/inherent-risk`
+## POST /api/v1/assessments/{assessmentId}/analysis-runs/{analysisRunId}/executive-summary
 
-- Purpose: Return the inherent-risk screen DTO for the latest successful deterministic run, creating one on demand if needed and if resolved triage data exists.
-- Path fields:
-  - `assessment_id`: `UUID`
-- Query fields:
-  - None
-- Body fields:
-  - None
-- Response DTO: `InherentRiskResponseDTO`
-- Service method called: `InherentRiskService.get_inherent_risk_screen`
-- Repository methods used:
-  - `AssessmentRepository.get_assessment`
-  - `AnalysisRepository.get_latest_completed_snapshot`
-  - `AssessmentRepository.load_active_triage_question_responses`
-  - `AnalysisRepository.create_analysis_run`
-  - `AnalysisRepository.upsert_question_risk_results`
-- Database tables read:
-  - `sar_assessments`
-  - `question_analysis_runs`
-  - `question_risk_results`
-  - `questionnaire_versions`
-  - `question_definitions`
-  - `assessment_responses`
-  - `question_options`
-- Database tables written:
-  - None when a successful snapshot already exists.
-  - `question_analysis_runs` and `question_risk_results` when the endpoint has to create a run on demand.
-- Classification:
-  - Scoring: Conditional
-  - AI: No
-  - Persistence: Conditional
-  - Retrieval only: Only when a successful snapshot already exists
-- Expected side effects:
-  - May create and persist a deterministic analysis run if none exists and resolved triage responses are available.
-  - Returns a not-assessed DTO with `analysisRunId: null` when no successful run exists and no resolved answered triage responses are available.
-  - Does not return failed runs as the selected snapshot.
-- Related tests:
-  - `tests/api/test_inherent_risk_api.py`
-  - `tests/unit/test_inherent_risk_service.py`
-  - `tests/unit/test_dto_models.py`
+Generates or reuses the executive summary for a specific existing inherent-risk analysis run.
 
-### POST `/api/v1/assessments/{assessment_id}/inherent-risk/executive-summary`
+Request
 
-- Purpose: Generate or reuse the executive summary for the latest successful inherent-risk run.
-- Path fields:
-  - `assessment_id`: `UUID`
-- Query fields:
-  - None
-- Body fields:
-  - `force`: `bool = false`
-- Response DTO: `ExecutiveSummaryGenerateResponseDTO`
-- Service method called: `ExecutiveSummaryService.generate`
-- Repository methods used:
-  - `AssessmentRepository.get_assessment`
-  - `AnalysisRepository.get_latest_completed_snapshot`
-  - `InherentRiskService.create_analysis_run`
-  - `AnalysisRepository.update_executive_summary`
-  - `AnalysisRepository.get_analysis_run`
-- Database tables read:
-  - `sar_assessments`
-  - `question_analysis_runs`
-  - `question_risk_results`
-  - `questionnaire_versions`
-  - `question_definitions`
-  - `assessment_responses`
-  - `question_options`
-- Database tables written:
-  - `question_analysis_runs`
-- Classification:
-  - Scoring: Conditional
-  - AI: Yes
-  - Persistence: Yes
-  - Retrieval only: No
-- Expected side effects:
-  - If no successful analysis run exists yet, first creates one through `InherentRiskService.create_analysis_run`.
-  - Reuses the stored summary when the computed input hash matches and `force` is `false`.
-  - Otherwise calls the Azure summary client, then writes summary text and metadata back to the same `question_analysis_runs` row.
-  - On AI timeout/request/output failure, writes a deterministic fallback summary, sets summary model to `fallback`, updates run status to `completed_with_limitations`, and stores the error summary.
-- Current contract:
-  - Response shape:
-    - `assessmentId: UUID`
-    - `analysisRunId: UUID`
-    - `executiveSummary.text: str`
-    - `executiveSummary.status: generated | fallback`
-    - `executiveSummary.generatedAt: datetime`
-  - `analysisRunId` currently refers to the underlying `question_analysis_runs.id` row whose summary was generated or reused.
-- Pending `analysisRunId` change:
-  - No pending `analysisRunId` contract change is implemented in the current registered app.
-  - `ExecutiveSummaryGenerateResponseDTO.analysisRunId` is still required and non-null in code.
-  - If a future change is planned to rename, remove, or make `analysisRunId` nullable, that change has not been applied to the route, DTO, service, or tests that currently back this endpoint.
-- Related tests:
-  - `tests/api/test_inherent_risk_api.py`
-  - `tests/unit/test_executive_summary_service.py`
-  - `tests/unit/test_inherent_risk_service.py`
+```json
+{
+  "force": false
+}
+```
 
-## Verification And Mismatch Report
+Response
 
-### Registered App Verification
+```json
+{
+  "assessmentId": "uuid",
+  "analysisRunId": "uuid",
+  "executiveSummary": {
+    "text": "Generated executive summary.",
+    "status": "generated",
+    "generatedAt": "2026-07-22T09:00:00Z"
+  }
+}
+```
 
-- Verified route inventory from the live `FastAPI` app:
-  - `GET /api/v1/assessments/{assessment_id}/intake`
-  - `PATCH /api/v1/assessments/{assessment_id}/questions/{question_id}`
-  - `GET /api/v1/assessments/{assessment_id}/inherent-risk`
-  - `POST /api/v1/assessments/{assessment_id}/analysis-runs`
-  - `POST /api/v1/assessments/{assessment_id}/inherent-risk/executive-summary`
-  - `GET /api/v1/assessments/{assessment_id}/ai-analysis`
-- No route-registration mismatch exists between this document and the current registered FastAPI app.
+Behavior
 
-### Additional Mismatches Found In The Repository
-
-- `app/api/v1/documents.py`, `app/api/v1/document_checklist.py`, and `app/api/v1/reports.py` exist under `app/api/v1` but are empty and are not registered in `app/api/router.py`.
-- The intake routes are registered, but `IntakeService` currently references `AssessmentRepository.load_intake_overview`, `get_question`, `get_question_option`, `get_question_option_by_label`, and `normalize_answer_value`, and those methods are not present in the current `app/repositories/assessment_repository.py` file.
-- The current AI-analysis DTO and assembler do not expose `aiExplanation` or `confidence`, but some tests still expect those fields:
-  - `tests/unit/test_ai_analysis_service.py`
-  - `tests/unit/test_api_router.py`
-  - `tests/unit/test_dto_models.py`
-- `tests/unit/test_inherent_risk_service.py` contains unresolved merge markers in the current worktree, so it is not currently collectible as a clean verification source.
+- `assessmentId` and `analysisRunId` are UUID path parameters.
+- `analysisRunId` maps to `question_analysis_runs.id`.
+- Loads the run using both `question_analysis_runs.assessment_id` and `question_analysis_runs.id`.
+- Returns `404` when the assessment/run pair does not identify a matching run.
+- Returns `409` when the targeted run status is `queued`, `running`, or `failed`.
+- Allows only `completed` and `completed_with_limitations`.
+- Reuses the saved summary when `executive_summary_input_hash` matches the newly built input payload and `force` is `false`.
+- Reuses the existing executive-summary generation flow and the existing LLM client.
+- Loads the prompt from `app/prompts/executive_summary.yaml`.
+- Saves the summary on the same `question_analysis_runs` row that was requested.
+- Persists summary text and metadata to:
+  - `executive_summary`
+  - `executive_summary_generated_at`
+  - `executive_summary_model`
+  - `executive_summary_prompt_version`
+  - `executive_summary_input_hash`
+- Does not infer the latest run.
+- Does not create a new run.
+- Does not recalculate scores.
+- Does not modify responses.
+- Does not modify `question_risk_results`.
+- Returns `status: fallback` and stores a deterministic fallback summary when Azure OpenAI times out, fails, or returns invalid structured output.
+- Replaced the removed assessment-only route `POST /api/v1/assessments/{assessmentId}/inherent-risk/executive-summary`.
+- This route change required no new database migration.
