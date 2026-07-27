@@ -15,7 +15,7 @@ The current FastAPI application exposes the inherent-risk workflow and the Docum
 - `DELETE /api/v1/assessments/{assessment_id}/documents/{document_id}`
 - `POST /api/v1/assessments/{assessment_id}/documents/{document_id}/classification-reviews`
 
-`db.txt` is the schema source of truth. The maintained runtime target is PostgreSQL schema `kpmg_sar`.
+`db.txt` is the schema source of truth. The runtime schema is selected through `DATABASE_SCHEMA`.
 
 ## Runtime Prerequisites
 
@@ -23,7 +23,7 @@ The current FastAPI application exposes the inherent-risk workflow and the Docum
 - PostgreSQL with tables and constraints aligned to [db.txt](/C:/Users/Lenovo/Documents/SAR_INTAKE_AGENT/db.txt)
 - Environment variables:
   - `DATABASE_URL`
-  - `DATABASE_SCHEMA` (defaults to `kpmg_sar`)
+  - `DATABASE_SCHEMA`
   - `AZURE_OPENAI_ENDPOINT`
   - `AZURE_OPENAI_API_KEY`
   - `AZURE_OPENAI_DEPLOYMENT`

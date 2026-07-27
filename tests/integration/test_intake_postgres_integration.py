@@ -18,7 +18,7 @@ from app.models.enums import QuestionnaireType, RiskLevel
 from tests.conftest import add_question_with_options, add_questionnaire_version
 
 POSTGRES_URL = os.getenv("DATABASE_URL")
-POSTGRES_SCHEMA = os.getenv("DATABASE_SCHEMA", "kpmg_sar")
+POSTGRES_SCHEMA = os.getenv("DATABASE_SCHEMA")
 
 
 def _postgres_url_or_skip() -> str:
@@ -307,9 +307,11 @@ def test_unique_response_constraint_is_enforced_in_postgres(postgres_db_session,
     postgres_db_session.rollback()
 
 
-def test_real_kpmg_sar_questionnaire_schema_matches_orm_contract() -> None:
+def test_real_configured_questionnaire_schema_matches_orm_contract() -> None:
     database_url = _postgres_url_or_skip()
     schema_name = POSTGRES_SCHEMA
+    if not schema_name:
+        pytest.skip("PostgreSQL integration tests require DATABASE_SCHEMA to inspect a configured schema.")
     engine = create_engine(database_url, future=True)
     try:
         inspector = inspect(engine)

@@ -126,7 +126,7 @@ def test_defaults_apply_only_when_env_and_env_file_are_absent(monkeypatch, tmp_p
     settings = config.get_settings()
 
     assert settings.database_url == "sqlite+aiosqlite:///./sar_assessment.db"
-    assert settings.database_schema == "kpmg_sar"
+    assert settings.database_schema is None
     assert settings.azure_openai_endpoint is None
     assert settings.azure_openai_api_key is None
     assert settings.azure_openai_deployment is None
