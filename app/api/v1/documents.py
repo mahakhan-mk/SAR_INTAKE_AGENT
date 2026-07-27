@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_session
 from app.assemblers.document_checklist_assembler import DocumentChecklistAssembler
+from app.config import get_settings
 from app.models.document_checklist import (
     AssessmentDocumentListResponseDTO,
     AssessmentDocumentResponseDTO,
@@ -21,6 +22,7 @@ from app.services.document_service import (
     DocumentUploadInput,
     DuplicateAssessmentDocumentError,
 )
+from app.services.document_storage import AzureBlobDocumentStorage, DocumentStorage
 
 router = APIRouter(prefix="/api/v1/assessments", tags=["documents"])
 
@@ -32,9 +34,19 @@ class ParsedMultipartFile:
     content: bytes
     fields: dict[str, str]
 
+def get_document_storage() -> DocumentStorage:
+    return AzureBlobDocumentStorage.from_settings(get_settings())
 
-def get_document_service() -> DocumentService:
+
+def get_document_service(
+) -> DocumentService:
     return DocumentService()
+
+
+def get_document_upload_service(
+    storage: DocumentStorage = Depends(get_document_storage),
+) -> DocumentService:
+    return DocumentService(storage=storage)
 
 
 def get_document_assembler() -> DocumentChecklistAssembler:
@@ -48,9 +60,10 @@ async def upload_assessment_document(
     system_document_type: AssessmentDocumentSystemType = Query(AssessmentDocumentSystemType.UNCLASSIFIED),
     uploaded_by: str | None = Query(None),
     session: AsyncSession = Depends(get_session),
-    service: DocumentService = Depends(get_document_service),
+    service: DocumentService = Depends(get_document_upload_service),
     assembler: DocumentChecklistAssembler = Depends(get_document_assembler),
 ) -> AssessmentDocumentResponseDTO:
+    document = None
     try:
         parsed_upload = await _parse_multipart_upload(request)
         document = await service.upload_document(
@@ -69,15 +82,23 @@ async def upload_assessment_document(
         return response
     except AssessmentDocumentNotFoundError as exc:
         await session.rollback()
+        if document is not None:
+            await service.compensate_failed_upload(document)
         raise HTTPException(status_code=404, detail="Assessment not found.") from exc
     except DuplicateAssessmentDocumentError as exc:
         await session.rollback()
+        if document is not None:
+            await service.compensate_failed_upload(document)
         raise HTTPException(status_code=409, detail="Duplicate active document content.") from exc
     except ValueError as exc:
         await session.rollback()
+        if document is not None:
+            await service.compensate_failed_upload(document)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception:
         await session.rollback()
+        if document is not None:
+            await service.compensate_failed_upload(document)
         raise
 
 

@@ -33,6 +33,7 @@ class DocumentRepository:
         self,
         session: AsyncSession,
         *,
+        document_id: UUID | str | None = None,
         assessment_id: UUID | str,
         original_filename: str,
         content_type: str,
@@ -46,6 +47,7 @@ class DocumentRepository:
         document_metadata: dict[str, object] | None = None,
     ) -> AssessmentDocument:
         document = AssessmentDocument(
+            id=self._coerce_uuid(document_id) if document_id is not None else uuid.uuid4(),
             assessment_id=self._coerce_uuid(assessment_id),
             original_filename=original_filename,
             content_type=content_type,

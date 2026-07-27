@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
+import logging
+import uuid
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,7 +12,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.database import AssessmentDocument, DocumentClassificationReview
 from app.models.enums import AssessmentDocumentSystemType, DocumentType
 from app.repositories.document_repository import DocumentRepository
-from app.services.document_storage import DocumentStorage, InMemoryDocumentStorage
+from app.services.document_storage import DocumentStorage, InMemoryDocumentStorage, StoredDocument
+
+logger = logging.getLogger(__name__)
 
 
 MAX_DOCUMENT_SIZE_BYTES = 25 * 1024 * 1024
@@ -70,26 +74,33 @@ class DocumentService:
         if duplicate is not None:
             raise DuplicateAssessmentDocumentError()
 
+        document_id = uuid.uuid4()
         stored_document = await self.storage.store(
             assessment_id=assessment_id,
+            document_id=document_id,
             filename=upload.filename,
             content_type=upload.content_type,
             content=upload.content,
         )
-        return await self.document_repository.create_assessment_document(
-            session,
-            assessment_id=assessment_id,
-            original_filename=upload.filename,
-            content_type=upload.content_type,
-            file_size_bytes=len(upload.content),
-            sha256=sha256,
-            storage_container=stored_document.container,
-            storage_key=stored_document.key,
-            upload_source="sar_request",
-            system_document_type=system_document_type,
-            uploaded_by=upload.uploaded_by,
-            document_metadata={},
-        )
+        try:
+            return await self.document_repository.create_assessment_document(
+                session,
+                document_id=document_id,
+                assessment_id=assessment_id,
+                original_filename=upload.filename,
+                content_type=upload.content_type,
+                file_size_bytes=len(upload.content),
+                sha256=sha256,
+                storage_container=stored_document.container,
+                storage_key=stored_document.key,
+                upload_source="sar_request",
+                system_document_type=system_document_type,
+                uploaded_by=upload.uploaded_by,
+                document_metadata={},
+            )
+        except Exception:
+            await self._delete_stored_document_quietly(stored_document)
+            raise
 
     async def list_active_documents(
         self,
@@ -146,6 +157,14 @@ class DocumentService:
             reviewed_by=reviewed_by,
         )
 
+    async def compensate_failed_upload(self, document: AssessmentDocument) -> None:
+        await self._delete_stored_document_quietly(
+            StoredDocument(
+                container=document.storage_container,
+                key=document.storage_key,
+            )
+        )
+
     @staticmethod
     def _validate_upload(upload: DocumentUploadInput) -> None:
         filename = upload.filename.strip()
@@ -157,3 +176,16 @@ class DocumentService:
             raise ValueError("Uploaded document must not be empty.")
         if len(upload.content) > MAX_DOCUMENT_SIZE_BYTES:
             raise ValueError("Uploaded document is too large.")
+
+    async def _delete_stored_document_quietly(self, stored_document) -> None:
+        try:
+            await self.storage.delete(
+                container=stored_document.container,
+                key=stored_document.key,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to compensate stored document after persistence failure container=%s key=%s",
+                stored_document.container,
+                stored_document.key,
+            )

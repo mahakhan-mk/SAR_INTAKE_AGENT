@@ -8,10 +8,12 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
 
 from app.api.dependencies import get_session
+from app.api.v1.documents import get_document_storage
 from app.main import app
 from app.models.database import AssessmentDocument, DocumentChecklistRun, SarAssessment
 from app.models.enums import DocumentType
 from app.services.document_checklist_service import DocumentChecklistService
+from app.services.document_storage import InMemoryDocumentStorage
 
 pytestmark = pytest.mark.asyncio
 
@@ -38,7 +40,7 @@ async def test_upload_persists_metadata_and_sha256(client, db_session, seeded_as
     assert payload["sha256"] == hashlib.sha256(content).hexdigest()
     assert payload["system_document_type"] == DocumentType.SOC2_TYPE_II.value
     assert document.storage_container == "sar-documents"
-    assert document.storage_key
+    assert document.storage_key == f"local-dev/documents/{payload['document_id']}/soc2.pdf"
 
 
 async def test_upload_rejects_duplicate_active_sha256(client, seeded_assessment):
@@ -161,6 +163,7 @@ async def test_upload_commits_once(session_factory, seeded_assessment):
             yield session
 
         app.dependency_overrides[get_session] = override_get_session
+        app.dependency_overrides[get_document_storage] = InMemoryDocumentStorage
         try:
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as test_client:
                 response = await upload_document(
@@ -173,6 +176,50 @@ async def test_upload_commits_once(session_factory, seeded_assessment):
 
     assert response.status_code == 200
     assert commit_calls == 1
+
+
+async def test_upload_rolls_back_and_deletes_blob_when_commit_fails(session_factory, seeded_assessment):
+    rollback_calls = 0
+    storage = InMemoryDocumentStorage()
+
+    async with session_factory() as session:
+        original_rollback = session.rollback
+
+        async def commit_spy():
+            raise RuntimeError("commit failed")
+
+        async def rollback_spy():
+            nonlocal rollback_calls
+            rollback_calls += 1
+            await original_rollback()
+
+        session.commit = commit_spy
+        session.rollback = rollback_spy
+
+        async def override_get_session():
+            yield session
+
+        app.dependency_overrides[get_session] = override_get_session
+        app.dependency_overrides[get_document_storage] = lambda: storage
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as test_client:
+                with pytest.raises(RuntimeError, match="commit failed"):
+                    await upload_document(
+                        test_client,
+                        seeded_assessment["assessment_id"],
+                        filename="commit-fail.pdf",
+                        content=b"commit-fail",
+                    )
+        finally:
+            app.dependency_overrides.clear()
+
+    assert rollback_calls == 1
+    assert storage.objects == {}
+
+    async with session_factory() as verification_session:
+        persisted_count = await verification_session.scalar(select(func.count()).select_from(AssessmentDocument))
+
+    assert persisted_count == 0
 
 
 async def upload_document(

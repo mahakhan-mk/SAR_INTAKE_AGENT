@@ -8,11 +8,13 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
 
 from app.api.dependencies import get_session
+from app.api.v1.documents import get_document_storage
 from app.main import app
 from app.models.database import DocumentClassificationReview, DocumentChecklistRun, SarAssessment
 from app.models.enums import DocumentType
 from app.repositories.document_repository import DocumentRepository
 from app.services.document_checklist_service import DocumentChecklistService
+from app.services.document_storage import InMemoryDocumentStorage
 
 pytestmark = pytest.mark.asyncio
 
@@ -203,6 +205,7 @@ async def test_classification_review_api_commits_once(session_factory, seeded_as
             yield session
 
         app.dependency_overrides[get_session] = override_get_session
+        app.dependency_overrides[get_document_storage] = InMemoryDocumentStorage
         try:
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as test_client:
                 response = await create_review(
@@ -239,6 +242,7 @@ async def upload_document_with_session(session, assessment_id: uuid.UUID) -> dic
         yield session
 
     app.dependency_overrides[get_session] = override_get_session
+    app.dependency_overrides[get_document_storage] = InMemoryDocumentStorage
     try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as test_client:
             return await upload_document(test_client, assessment_id)

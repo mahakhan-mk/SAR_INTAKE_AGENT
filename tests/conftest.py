@@ -10,6 +10,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from app.api.dependencies import get_inherent_risk_scoring_policy, get_session
+from app.api.v1.documents import get_document_storage
 from app.config import PercentageInherentRiskScoringPolicy
 from app.database import create_engine_from_url, get_db
 from app.main import app
@@ -24,6 +25,7 @@ from app.models.database import (
     SarAssessment,
 )
 from app.models.enums import AnalysisRunStatus, QuestionnaireType, RiskLevel
+from app.services.document_storage import InMemoryDocumentStorage
 
 
 @pytest_asyncio.fixture()
@@ -214,6 +216,7 @@ async def client(
     app.dependency_overrides[get_session] = override_get_session
     app.dependency_overrides[get_db] = override_get_session
     app.dependency_overrides[get_inherent_risk_scoring_policy] = PercentageInherentRiskScoringPolicy
+    app.dependency_overrides[get_document_storage] = InMemoryDocumentStorage
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as test_client:
         yield test_client
