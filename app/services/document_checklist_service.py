@@ -54,6 +54,10 @@ class DocumentChecklistItemNotFoundError(LookupError):
     pass
 
 
+class DocumentChecklistRunNotFoundError(LookupError):
+    pass
+
+
 class DocumentChecklistService:
     def __init__(
         self,
@@ -72,7 +76,7 @@ class DocumentChecklistService:
         )
         self.llm_client = llm_client
 
-    async def generate_checklist_run(
+    async def generate_checklist(
         self,
         session: AsyncSession,
         assessment_id: UUID | str,
@@ -159,6 +163,13 @@ class DocumentChecklistService:
         ]
         return DocumentChecklistGenerationResult(run=run_record.run, items=item_states)
 
+    async def generate_checklist_run(
+        self,
+        session: AsyncSession,
+        assessment_id: UUID | str,
+    ) -> DocumentChecklistGenerationResult:
+        return await self.generate_checklist(session, assessment_id)
+
     async def _generate_summary(
         self,
         session: AsyncSession,
@@ -198,21 +209,31 @@ class DocumentChecklistService:
                 error_summary=str(exc)[:500],
             )
 
-    async def get_latest_checklist_run(
+    async def get_checklist(
         self,
         session: AsyncSession,
         assessment_id: UUID | str,
-    ) -> DocumentChecklistReadState | None:
+    ) -> DocumentChecklistReadState:
         normalized_assessment_id = self._coerce_uuid(assessment_id)
         run_record = await self.checklist_repository.get_latest_checklist_run_with_items(
             session,
             normalized_assessment_id,
         )
         if run_record is None:
-            return None
+            raise DocumentChecklistRunNotFoundError()
         return await self._build_read_state(session, normalized_assessment_id, run_record)
 
-    async def append_item_review(
+    async def get_latest_checklist_run(
+        self,
+        session: AsyncSession,
+        assessment_id: UUID | str,
+    ) -> DocumentChecklistReadState | None:
+        try:
+            return await self.get_checklist(session, assessment_id)
+        except DocumentChecklistRunNotFoundError:
+            return None
+
+    async def apply_reviewer_override(
         self,
         session: AsyncSession,
         *,
@@ -247,13 +268,32 @@ class DocumentChecklistService:
             item=item_record.item,
         )
 
-    async def get_checklist_run(
+    async def append_item_review(
+        self,
+        session: AsyncSession,
+        *,
+        assessment_id: UUID | str,
+        item_id: UUID | str,
+        reviewer_verdict: ChecklistVerdict | str | None,
+        reason: str | None = None,
+        reviewed_by: str | None = None,
+    ) -> DocumentChecklistItemReadState:
+        return await self.apply_reviewer_override(
+            session,
+            assessment_id=assessment_id,
+            item_id=item_id,
+            reviewer_verdict=reviewer_verdict,
+            reason=reason,
+            reviewed_by=reviewed_by,
+        )
+
+    async def finalize_checklist(
         self,
         session: AsyncSession,
         *,
         assessment_id: UUID | str,
         run_id: UUID | str,
-    ) -> DocumentChecklistReadState | None:
+    ) -> DocumentChecklistReadState:
         normalized_assessment_id = self._coerce_uuid(assessment_id)
         run_record = await self.checklist_repository.get_checklist_run_with_items(
             session,
@@ -261,8 +301,24 @@ class DocumentChecklistService:
             run_id=run_id,
         )
         if run_record is None:
-            return None
+            raise DocumentChecklistRunNotFoundError()
         return await self._build_read_state(session, normalized_assessment_id, run_record)
+
+    async def get_checklist_run(
+        self,
+        session: AsyncSession,
+        *,
+        assessment_id: UUID | str,
+        run_id: UUID | str,
+    ) -> DocumentChecklistReadState | None:
+        try:
+            return await self.finalize_checklist(
+                session,
+                assessment_id=assessment_id,
+                run_id=run_id,
+            )
+        except DocumentChecklistRunNotFoundError:
+            return None
 
     async def _build_read_state(
         self,

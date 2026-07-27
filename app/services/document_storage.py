@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import Protocol
 from dataclasses import dataclass
 import uuid
 from uuid import UUID
@@ -11,7 +12,7 @@ class StoredDocument:
     key: str
 
 
-class DocumentStorage:
+class DocumentStorage(Protocol):
     async def store(
         self,
         *,
@@ -20,10 +21,10 @@ class DocumentStorage:
         content_type: str,
         content: bytes,
     ) -> StoredDocument:
-        raise NotImplementedError
+        ...
 
 
-class InMemoryDocumentStorage(DocumentStorage):
+class InMemoryDocumentStorage:
     def __init__(self) -> None:
         self.objects: dict[tuple[str, str], bytes] = {}
 

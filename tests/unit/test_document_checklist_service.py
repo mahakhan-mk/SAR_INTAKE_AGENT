@@ -14,7 +14,10 @@ from app.repositories.vendor_certification_repository import (
     vendor_reputation_hitl_reviews,
     vendor_reputation_jobs,
 )
-from app.services.document_checklist_service import DocumentChecklistService
+from app.services.document_checklist_service import (
+    DocumentChecklistRunNotFoundError,
+    DocumentChecklistService,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -343,6 +346,60 @@ async def test_review_service_flushes_without_committing(db_session, seeded_asse
     assert commit_calls == 0
     assert result.item.id == item.id
     assert result.effective_verdict == ChecklistVerdict.RECOMMENDED.value
+
+
+async def test_application_service_generate_and_finalize_directly_without_fastapi(
+    db_session,
+    seeded_assessment,
+):
+    service = DocumentChecklistService(llm_client=FakeSummaryClient(summary="Checklist summary."))
+
+    generated = await service.generate_checklist(db_session, seeded_assessment["assessment_id"])
+    state = await service.finalize_checklist(
+        db_session,
+        assessment_id=seeded_assessment["assessment_id"],
+        run_id=generated.run.id,
+    )
+
+    assert state.run.id == generated.run.id
+    assert state.run.assessment_id == seeded_assessment["assessment_id"]
+    assert [item.item.document_type for item in state.items] == [
+        DocumentType.SOC2_TYPE_II.value,
+        DocumentType.ISO_27001.value,
+        DocumentType.ARCHITECTURE_DIAGRAM.value,
+    ]
+
+
+async def test_application_service_get_checklist_raises_not_found_directly_without_fastapi(
+    db_session,
+    seeded_assessment,
+):
+    service = DocumentChecklistService()
+
+    with pytest.raises(DocumentChecklistRunNotFoundError):
+        await service.get_checklist(db_session, seeded_assessment["assessment_id"])
+
+
+async def test_application_service_apply_reviewer_override_directly_without_fastapi(
+    db_session,
+    seeded_assessment,
+):
+    service = DocumentChecklistService()
+    generated = await service.generate_checklist(db_session, seeded_assessment["assessment_id"])
+    item_id = generated.items[0].item.id
+
+    reviewed = await service.apply_reviewer_override(
+        db_session,
+        assessment_id=seeded_assessment["assessment_id"],
+        item_id=item_id,
+        reviewer_verdict=ChecklistVerdict.RECOMMENDED,
+        reason="Reviewer accepted certification.",
+    )
+    latest = await service.get_checklist(db_session, seeded_assessment["assessment_id"])
+
+    assert reviewed.item.id == item_id
+    assert reviewed.effective_verdict == ChecklistVerdict.RECOMMENDED.value
+    assert latest.items[0].reviewer_verdict == ChecklistVerdict.RECOMMENDED.value
 
 
 async def add_document(

@@ -165,14 +165,14 @@ async def test_post_commits_once(session_factory, seeded_assessment):
 
 async def test_get_does_not_commit_or_regenerate(session_factory, seeded_assessment):
     async with session_factory() as seed_session:
-        await DocumentChecklistService().generate_checklist_run(seed_session, seeded_assessment["assessment_id"])
+        await DocumentChecklistService().generate_checklist(seed_session, seeded_assessment["assessment_id"])
         await seed_session.commit()
 
     commit_calls = 0
     generate_calls = 0
 
     class GuardedService(DocumentChecklistService):
-        async def generate_checklist_run(self, session, assessment_id):
+        async def generate_checklist(self, session, assessment_id):
             nonlocal generate_calls
             generate_calls += 1
             raise AssertionError("GET must not regenerate a checklist.")
