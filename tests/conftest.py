@@ -72,7 +72,7 @@ async def add_questionnaire_version(
     is_active: bool = True,
 ) -> QuestionnaireVersion:
     questionnaire_version = QuestionnaireVersion(
-        id=uuid4(),
+        id=uuid.uuid4(),
         questionnaire_type=questionnaire_type,
         version=version,
         status="active" if is_active else "inactive",
@@ -88,6 +88,9 @@ async def add_question_with_options(
     *,
     risk_domain: str,
     question_text: str | None = None,
+    question_code: str | None = None,
+    section_code: str | None = "triage",
+    prompt: str | None = None,
     why_it_matters: str = "Configuration-defined rationale.",
     is_visible: bool = True,
     is_required: bool = True,
@@ -98,15 +101,15 @@ async def add_question_with_options(
     question = QuestionDefinition(
         id=uuid.uuid4(),
         questionnaire_version_id=questionnaire_version_id,
-        question_code=f"question-{uuid.uuid4()}",
-        question_text=question_text or f"{risk_domain} question",
+        question_code=question_code or f"question-{uuid.uuid4()}",
+        question_text=prompt or question_text or f"{risk_domain} question",
         response_type=response_type or "single_select",
         risk_domain=risk_domain,
         is_required=is_required,
-        section_code="triage",
+        section_code=section_code,
         question_order=question_order,
+        is_visible=is_visible,
     )
-    question.why_it_matters = why_it_matters
     session.add(question)
     await session.flush()
 
@@ -142,22 +145,30 @@ async def add_question_with_option(
     risk_level: RiskLevel,
     risk_weight: float,
     question_text: str | None = None,
+    question_code: str | None = None,
+    section_code: str | None = "triage",
+    prompt: str | None = None,
     label: str = "Selected",
     why_it_matters: str = "Configuration-defined rationale.",
     risk_signal: str = "Configuration-defined signal.",
     is_visible: bool = True,
     is_required: bool = True,
     question_order: int | None = 1,
+    response_type: str | None = None,
 ) -> tuple[QuestionDefinition, QuestionOption]:
     question, options = await add_question_with_options(
         session,
         questionnaire_version_id,
         risk_domain=risk_domain,
         question_text=question_text,
+        question_code=question_code,
+        section_code=section_code,
+        prompt=prompt,
         why_it_matters=why_it_matters,
         is_visible=is_visible,
         is_required=is_required,
         question_order=question_order,
+        response_type=response_type,
         options=[(label, risk_level, risk_weight, risk_signal)],
     )
     return question, options[0]
@@ -169,11 +180,15 @@ async def add_response(
     question: QuestionDefinition,
     option: QuestionOption | None = None,
     *,
-    answer_value: dict[str, object] | None = None,
+    answer_value: object | None = None,
 ) -> AssessmentResponse:
     resolved_answer_value = answer_value
     if resolved_answer_value is None and option is not None:
-        resolved_answer_value = option.option_label
+        resolved_answer_value = {
+            "optionCode": option.option_code,
+            "optionLabel": option.option_label,
+            "selectedOptionId": str(option.id),
+        }
 
     response = AssessmentResponse(
         id=uuid.uuid4(),
@@ -182,7 +197,6 @@ async def add_response(
         answer_value=resolved_answer_value,
         response_status="answered",
     )
-    response.selected_option_id = option.id if option else None
     session.add(response)
     await session.commit()
     return response

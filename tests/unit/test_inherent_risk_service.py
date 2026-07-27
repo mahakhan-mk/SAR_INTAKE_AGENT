@@ -309,7 +309,7 @@ async def test_existing_completed_run_is_returned_correctly(db_session, seeded_c
 
     dto = await service.get_inherent_risk_screen(db_session, seeded_completed_run["assessment_id"])
 
-    assert dto.analysisRunId == str(seeded_completed_run["run_id"])
+    assert dto.analysisRunId == seeded_completed_run["run_id"]
     assert dto.executiveSummary.text == "Stored summary."
     assert dto.executiveSummary.status == ExecutiveSummaryStatus.GENERATED
 
@@ -356,18 +356,14 @@ async def test_previous_runs_remain_unchanged_and_latest_successful_run_is_selec
     assert (await db_session.get(QuestionAnalysisRun, uuid.UUID(first_run.analysisRunId))).inherent_score == first_score
 
     dto = await service.get_inherent_risk_screen(db_session, seeded_assessment["assessment_id"])
-    assert dto.analysisRunId == second_run.analysisRunId
+    assert dto.analysisRunId == uuid.UUID(second_run.analysisRunId)
     assert dto.inherentRisk.level == RiskLevel.HIGH
 
 
 async def test_failed_run_is_not_selected_as_latest_completed_run(db_session, seeded_completed_run):
     db_session.add(
         QuestionAnalysisRun(
-<<<<<<< HEAD
             id=uuid.uuid4(),
-=======
-            id=uuid4(),
->>>>>>> origin/main
             assessment_id=seeded_completed_run["assessment_id"],
             status=AnalysisRunStatus.FAILED.value,
             scoring_rule_version="existing-config-v1",
@@ -379,8 +375,46 @@ async def test_failed_run_is_not_selected_as_latest_completed_run(db_session, se
     service = build_service()
     dto = await service.get_inherent_risk_screen(db_session, seeded_completed_run["assessment_id"])
 
-    assert dto.analysisRunId == str(seeded_completed_run["run_id"])
+    assert dto.analysisRunId == seeded_completed_run["run_id"]
     assert dto.status == AnalysisRunStatus.COMPLETED
+
+
+async def test_create_analysis_run_service_does_not_commit_or_rollback(db_session, seeded_assessment, monkeypatch):
+    question, options = await add_question_with_options(
+        db_session,
+        seeded_assessment["questionnaire_version_id"],
+        risk_domain="Security",
+        options=[
+            ("Selected", RiskLevel.HIGH, 3.0, "High security signal."),
+            ("Maximum", RiskLevel.CRITICAL, 4.0, "Maximum security signal."),
+        ],
+    )
+    await add_response(db_session, seeded_assessment["assessment_id"], question, options[0])
+    service = build_service()
+    commit_calls = 0
+    rollback_calls = 0
+    original_commit = db_session.commit
+    original_rollback = db_session.rollback
+
+    async def commit_spy():
+        nonlocal commit_calls
+        commit_calls += 1
+        return await original_commit()
+
+    async def rollback_spy():
+        nonlocal rollback_calls
+        rollback_calls += 1
+        return await original_rollback()
+
+    monkeypatch.setattr(db_session, "commit", commit_spy)
+    monkeypatch.setattr(db_session, "rollback", rollback_spy)
+
+    run_dto = await service.create_analysis_run(db_session, seeded_assessment["assessment_id"])
+    run = await db_session.get(QuestionAnalysisRun, uuid.UUID(run_dto.analysisRunId))
+
+    assert run is not None
+    assert commit_calls == 0
+    assert rollback_calls == 0
 
 
 async def test_no_llm_client_is_called(db_session, seeded_assessment, monkeypatch):

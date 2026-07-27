@@ -97,7 +97,6 @@ class ExecutiveSummaryService:
                 generated_at=generated_at,
                 error_summary=None,
             )
-            await session.commit()
             return self._build_response(
                 assessment_id=assessment_id,
                 analysis_run_id=run.id,
@@ -106,8 +105,6 @@ class ExecutiveSummaryService:
                 generated_at=generated_at,
             )
         except (AzureSummaryTimeoutError, AzureSummaryRequestError, InvalidSummaryOutputError) as exc:
-            await session.rollback()
-            await session.refresh(assessment)
             fallback_text = self._build_fallback_summary(assessment, snapshot)
             run = await self.analysis_repository.update_executive_summary(
                 session=session,
@@ -120,7 +117,6 @@ class ExecutiveSummaryService:
                 generated_at=generated_at,
                 error_summary=str(exc),
             )
-            await session.commit()
             return self._build_response(
                 assessment_id=assessment_id,
                 analysis_run_id=run.id,

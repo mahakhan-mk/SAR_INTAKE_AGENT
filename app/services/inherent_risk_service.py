@@ -156,46 +156,16 @@ class InherentRiskService:
             if limitations or not question_results
             else AnalysisRunStatus.COMPLETED
         )
-        try:
-            run = await self.analysis_repository.create_analysis_run(
-                session=session,
-                assessment_id=assessment_id,
-                status=status,
-                scoring_rule_version=self.scoring_policy.version,
-                triage_score=triage_score,
-                inherent_score=inherent_score,
-                inherent_risk_level=overall_level,
-            )
-            await self.analysis_repository.upsert_question_risk_results(session, run.id, question_results)
-            await session.commit()
-        except Exception as exc:
-            await session.rollback()
-            failed_run = await self.analysis_repository.create_analysis_run(
-                session=session,
-                assessment_id=assessment_id,
-                status=AnalysisRunStatus.FAILED,
-                scoring_rule_version=self.scoring_policy.version,
-                triage_score=None,
-                inherent_score=None,
-                inherent_risk_level=RiskLevel.NOT_ASSESSED,
-                error_summary=str(exc),
-            )
-            await session.commit()
-            return StoredAnalysisSnapshot(
-                analysis_run_id=failed_run.id,
-                status=AnalysisRunStatus.FAILED,
-                triage_score=None,
-                inherent_score=None,
-                inherent_risk_level=RiskLevel.NOT_ASSESSED,
-                executive_summary_status=ExecutiveSummaryStatus.NOT_GENERATED,
-                executive_summary_text=None,
-                executive_summary_model=None,
-                executive_summary_prompt_version=None,
-                executive_summary_input_hash=None,
-                executive_summary_generated_at=None,
-                error_summary=str(exc),
-                question_results=[],
-            )
+        run = await self.analysis_repository.create_analysis_run(
+            session=session,
+            assessment_id=assessment_id,
+            status=status,
+            scoring_rule_version=self.scoring_policy.version,
+            triage_score=triage_score,
+            inherent_score=inherent_score,
+            inherent_risk_level=overall_level,
+        )
+        await self.analysis_repository.upsert_question_risk_results(session, run.id, question_results)
 
         return StoredAnalysisSnapshot(
             analysis_run_id=run.id,

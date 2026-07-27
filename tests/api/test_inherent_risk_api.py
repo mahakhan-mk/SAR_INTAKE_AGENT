@@ -4,9 +4,14 @@ from datetime import datetime, timezone
 import uuid
 
 import pytest
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
-from app.api.dependencies import get_azure_executive_summary_client, get_executive_summary_prompt_loader
+from app.api.dependencies import (
+    get_azure_executive_summary_client,
+    get_executive_summary_prompt_loader,
+    get_session,
+)
 from app.llm.executive_summary import ExecutiveSummaryPromptLoader
 from app.main import app
 from app.models.database import QuestionAnalysisRun, QuestionnaireVersion, SarAssessment
@@ -361,3 +366,131 @@ async def test_get_returns_latest_successful_run_when_failed_run_exists(client, 
 
     assert response.status_code == 200
     assert response.json()["analysisRunId"] == created["analysisRunId"]
+
+
+async def test_post_analysis_run_route_commits_once(session_factory, seeded_assessment):
+    async with session_factory() as seed_session:
+        question, options = await add_question_with_options(
+            seed_session,
+            seeded_assessment["questionnaire_version_id"],
+            risk_domain="Business Continuity",
+            options=[
+                ("Selected", RiskLevel.HIGH, 2.0, "High continuity signal."),
+                ("Maximum", RiskLevel.CRITICAL, 4.0, "Maximum continuity signal."),
+            ],
+        )
+        await add_response(seed_session, seeded_assessment["assessment_id"], question, options[0])
+
+    commit_calls = 0
+    async with session_factory() as session:
+        original_commit = session.commit
+
+        async def commit_spy():
+            nonlocal commit_calls
+            commit_calls += 1
+            await original_commit()
+
+        session.commit = commit_spy
+
+        async def override_get_session():
+            yield session
+
+        app.dependency_overrides[get_session] = override_get_session
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as test_client:
+                response = await test_client.post(
+                    f"/api/v1/assessments/{seeded_assessment['assessment_id']}/analysis-runs",
+                    json={"force": False},
+                )
+        finally:
+            app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert commit_calls == 1
+
+
+async def test_post_executive_summary_route_commits_once(
+    client,
+    session_factory,
+    seeded_assessment,
+    executive_summary_prompt_path,
+):
+    fake_client = FakeAzureSummaryClient("Generated executive summary.")
+    app.dependency_overrides[get_executive_summary_prompt_loader] = lambda: ExecutiveSummaryPromptLoader(
+        executive_summary_prompt_path
+    )
+    app.dependency_overrides[get_azure_executive_summary_client] = lambda: fake_client
+
+    async with session_factory() as seed_session:
+        question, options = await add_question_with_options(
+            seed_session,
+            seeded_assessment["questionnaire_version_id"],
+            risk_domain="Business Continuity",
+            options=[
+                ("Selected", RiskLevel.HIGH, 2.0, "High continuity signal."),
+                ("Maximum", RiskLevel.CRITICAL, 4.0, "Maximum continuity signal."),
+            ],
+        )
+        await add_response(seed_session, seeded_assessment["assessment_id"], question, options[0])
+
+    create_response = await client.post(
+        f"/api/v1/assessments/{seeded_assessment['assessment_id']}/analysis-runs",
+        json={"force": False},
+    )
+    analysis_run_id = create_response.json()["analysisRunId"]
+
+    commit_calls = 0
+    async with session_factory() as session:
+        original_commit = session.commit
+
+        async def commit_spy():
+            nonlocal commit_calls
+            commit_calls += 1
+            await original_commit()
+
+        session.commit = commit_spy
+
+        async def override_get_session():
+            yield session
+
+        app.dependency_overrides[get_session] = override_get_session
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as test_client:
+                response = await test_client.post(
+                    f"/api/v1/assessments/{seeded_assessment['assessment_id']}/analysis-runs/{analysis_run_id}/executive-summary",
+                    json={"force": False},
+                )
+        finally:
+            app.dependency_overrides.clear()
+            app.dependency_overrides.pop(get_executive_summary_prompt_loader, None)
+            app.dependency_overrides.pop(get_azure_executive_summary_client, None)
+
+    assert response.status_code == 200
+    assert commit_calls == 1
+
+
+async def test_get_inherent_risk_does_not_commit(session_factory, seeded_assessment):
+    commit_calls = 0
+
+    async with session_factory() as session:
+        async def commit_spy():
+            nonlocal commit_calls
+            commit_calls += 1
+            raise AssertionError("GET must not commit.")
+
+        session.commit = commit_spy
+
+        async def override_get_session():
+            yield session
+
+        app.dependency_overrides[get_session] = override_get_session
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as test_client:
+                response = await test_client.get(
+                    f"/api/v1/assessments/{seeded_assessment['assessment_id']}/inherent-risk"
+                )
+        finally:
+            app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert commit_calls == 0

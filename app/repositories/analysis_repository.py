@@ -30,6 +30,26 @@ SUCCESSFUL_RUN_STATUSES = (
 
 
 class AnalysisRepository:
+    async def get_latest_usable_analysis_run(
+        self,
+        session: AsyncSession,
+        assessment_id: uuid.UUID,
+    ) -> QuestionAnalysisRun | None:
+        return (
+            await session.execute(
+                select(QuestionAnalysisRun)
+                .where(
+                    QuestionAnalysisRun.assessment_id == self._coerce_uuid(assessment_id),
+                    QuestionAnalysisRun.status.in_(SUCCESSFUL_RUN_STATUSES),
+                )
+                .order_by(
+                    QuestionAnalysisRun.completed_at.desc().nullslast(),
+                    QuestionAnalysisRun.created_at.desc(),
+                    QuestionAnalysisRun.id.desc(),
+                )
+            )
+        ).scalars().first()
+
     async def load_ai_analysis_view(
         self,
         session: AsyncSession,
@@ -40,16 +60,7 @@ class AnalysisRepository:
         if assessment is None:
             return None
 
-        latest_run = (
-            await session.execute(
-                select(QuestionAnalysisRun)
-                .where(
-                    QuestionAnalysisRun.assessment_id == normalized_assessment_id,
-                    QuestionAnalysisRun.status.in_(SUCCESSFUL_RUN_STATUSES),
-                )
-                .order_by(QuestionAnalysisRun.created_at.desc(), QuestionAnalysisRun.id.desc())
-            )
-        ).scalars().first()
+        latest_run = await self.get_latest_usable_analysis_run(session, normalized_assessment_id)
 
         version = (
             await session.execute(
@@ -176,16 +187,7 @@ class AnalysisRepository:
         session: AsyncSession,
         assessment_id: uuid.UUID,
     ) -> StoredAnalysisSnapshot | None:
-        run = (
-            await session.execute(
-            select(QuestionAnalysisRun)
-            .where(
-                QuestionAnalysisRun.assessment_id == self._coerce_uuid(assessment_id),
-                QuestionAnalysisRun.status.in_(SUCCESSFUL_RUN_STATUSES),
-            )
-            .order_by(QuestionAnalysisRun.created_at.desc(), QuestionAnalysisRun.id.desc())
-            )
-        ).scalars().first()
+        run = await self.get_latest_usable_analysis_run(session, assessment_id)
 
         if run is None:
             return None

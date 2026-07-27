@@ -33,11 +33,17 @@ async def create_analysis_run(
     session: AsyncSession = Depends(get_session),
     service: InherentRiskService = Depends(get_inherent_risk_service),
 ) -> AnalysisRunCreateResponseDTO:
-    return await service.create_analysis_run(
-        session=session,
-        assessment_id=assessment_id,
-        force=payload.force,
-    )
+    try:
+        response = await service.create_analysis_run(
+            session=session,
+            assessment_id=assessment_id,
+            force=payload.force,
+        )
+        await session.commit()
+        return response
+    except Exception:
+        await session.rollback()
+        raise
 
 
 @router.post("/{assessment_id}/analysis-runs/{analysis_run_id}/executive-summary", response_model=ExecutiveSummaryGenerateResponseDTO)
@@ -48,9 +54,15 @@ async def generate_executive_summary(
     session: AsyncSession = Depends(get_session),
     service: ExecutiveSummaryService = Depends(get_executive_summary_service),
 ) -> ExecutiveSummaryGenerateResponseDTO:
-    return await service.generate(
-        session=session,
-        assessment_id=assessment_id,
-        analysis_run_id=analysis_run_id,
-        force=payload.force,
-    )
+    try:
+        response = await service.generate(
+            session=session,
+            assessment_id=assessment_id,
+            analysis_run_id=analysis_run_id,
+            force=payload.force,
+        )
+        await session.commit()
+        return response
+    except Exception:
+        await session.rollback()
+        raise
