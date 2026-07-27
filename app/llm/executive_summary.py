@@ -16,11 +16,12 @@ class ExecutiveSummaryPromptConfig(BaseModel):
     version: str
     system: str
     user_template: str
+    response_field: str = "summary"
 
     def render_user_prompt(self, payload: dict[str, object]) -> str:
         input_json = json.dumps(payload, indent=2, sort_keys=True)
         try:
-            return self.user_template.format(input_json=input_json)
+            return self.user_template.format(input_json=input_json, **payload)
         except KeyError as exc:
             raise PromptConfigurationError(
                 f"Executive summary prompt template is missing a supported placeholder: {exc.args[0]}."
@@ -55,8 +56,16 @@ class ExecutiveSummaryPromptLoader:
                 f"Executive summary prompt file at {self.prompt_path} must define a mapping."
             )
 
+        normalized_payload = dict(payload)
+        if "system_prompt" in normalized_payload:
+            normalized_payload["system"] = normalized_payload.pop("system_prompt")
+        if "user_prompt_template" in normalized_payload:
+            normalized_payload["user_template"] = normalized_payload.pop("user_prompt_template")
+            normalized_payload.setdefault("response_field", "summary_text")
+        normalized_payload.setdefault("id", self.prompt_path.stem)
+
         try:
-            return ExecutiveSummaryPromptConfig.model_validate(payload)
+            return ExecutiveSummaryPromptConfig.model_validate(normalized_payload)
         except ValidationError as exc:
             raise PromptConfigurationError(
                 f"Executive summary prompt file at {self.prompt_path} is missing one or more required fields."

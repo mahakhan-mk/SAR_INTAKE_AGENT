@@ -12,13 +12,16 @@ from app.models.enums import RiskLevel
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ENV_FILE = PROJECT_ROOT / ".env"
 
+DATABASE_SCHEMA_ENV_VAR = "DATABASE_SCHEMA"
 DATABASE_SCHEMA_TOKEN = "configured_database_schema"
 
 
 @dataclass(frozen=True)
 class Settings:
     database_url: str
-    database_schema: str
+    database_schema: str | None
+    azure_blob_connection_string: str | None
+    azure_blob_container_name: str | None
     azure_openai_endpoint: str | None
     azure_openai_api_key: str | None
     azure_openai_deployment: str | None
@@ -30,7 +33,9 @@ def get_settings() -> Settings:
     load_dotenv(dotenv_path=ENV_FILE, override=False)
     return Settings(
         database_url=os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./sar_assessment.db"),
-        database_schema=os.getenv("DATABASE_SCHEMA", "kpmg_sar"),
+        database_schema=os.getenv(DATABASE_SCHEMA_ENV_VAR),
+        azure_blob_connection_string=os.getenv("AZURE_BLOB_CONNECTION_STRING"),
+        azure_blob_container_name=os.getenv("AZURE_BLOB_CONTAINER_NAME"),
         azure_openai_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
         azure_openai_api_key=os.getenv("AZURE_OPENAI_API_KEY"),
         azure_openai_deployment=os.getenv("AZURE_OPENAI_DEPLOYMENT"),

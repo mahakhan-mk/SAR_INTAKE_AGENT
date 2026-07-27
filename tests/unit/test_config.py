@@ -7,6 +7,8 @@ from app import config
 CONFIG_ENV_KEYS = (
     "DATABASE_URL",
     "DATABASE_SCHEMA",
+    "AZURE_BLOB_CONNECTION_STRING",
+    "AZURE_BLOB_CONTAINER_NAME",
     "AZURE_OPENAI_ENDPOINT",
     "AZURE_OPENAI_API_KEY",
     "AZURE_OPENAI_DEPLOYMENT",
@@ -77,6 +79,8 @@ def test_azure_settings_are_loaded_from_env_file(monkeypatch, tmp_path):
     write_env_file(
         env_file,
         {
+            "AZURE_BLOB_CONNECTION_STRING": "UseDevelopmentStorage=true",
+            "AZURE_BLOB_CONTAINER_NAME": "sar-documents",
             "AZURE_OPENAI_ENDPOINT": "https://example.openai.azure.com",
             "AZURE_OPENAI_API_KEY": "test-api-key",
             "AZURE_OPENAI_DEPLOYMENT": "gpt-5.5-test",
@@ -88,6 +92,8 @@ def test_azure_settings_are_loaded_from_env_file(monkeypatch, tmp_path):
 
     settings = config.get_settings()
 
+    assert settings.azure_blob_connection_string == "UseDevelopmentStorage=true"
+    assert settings.azure_blob_container_name == "sar-documents"
     assert settings.azure_openai_endpoint == "https://example.openai.azure.com"
     assert settings.azure_openai_api_key == "test-api-key"
     assert settings.azure_openai_deployment == "gpt-5.5-test"
@@ -103,18 +109,21 @@ def test_environment_variables_override_env_file_values(monkeypatch, tmp_path):
         {
             "DATABASE_URL": "postgresql+asyncpg://env-file.example/sardb?ssl=require",
             "DATABASE_SCHEMA": "env_file_schema",
+            "AZURE_BLOB_CONNECTION_STRING": "UseDevelopmentStorage=true",
             "AZURE_OPENAI_ENDPOINT": "https://env-file.openai.azure.com",
         },
     )
     monkeypatch.setattr(config, "ENV_FILE", env_file)
     monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://process-env.example/sardb?ssl=require")
     monkeypatch.setenv("DATABASE_SCHEMA", "process_env_schema")
+    monkeypatch.setenv("AZURE_BLOB_CONNECTION_STRING", "DefaultEndpointsProtocol=https")
     monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://process-env.openai.azure.com")
 
     settings = config.get_settings()
 
     assert settings.database_url == "postgresql+asyncpg://process-env.example/sardb?ssl=require"
     assert settings.database_schema == "process_env_schema"
+    assert settings.azure_blob_connection_string == "DefaultEndpointsProtocol=https"
     assert settings.azure_openai_endpoint == "https://process-env.openai.azure.com"
 
 
@@ -126,7 +135,9 @@ def test_defaults_apply_only_when_env_and_env_file_are_absent(monkeypatch, tmp_p
     settings = config.get_settings()
 
     assert settings.database_url == "sqlite+aiosqlite:///./sar_assessment.db"
-    assert settings.database_schema == "kpmg_sar"
+    assert settings.database_schema is None
+    assert settings.azure_blob_connection_string is None
+    assert settings.azure_blob_container_name is None
     assert settings.azure_openai_endpoint is None
     assert settings.azure_openai_api_key is None
     assert settings.azure_openai_deployment is None

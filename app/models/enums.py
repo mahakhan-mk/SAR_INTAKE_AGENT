@@ -45,3 +45,36 @@ class ExecutiveSummaryStatus(StrEnum):
 
 class QuestionnaireType(StrEnum):
     TRIAGE = "triage"
+
+
+class DocumentType(StrEnum):
+    SOC2_TYPE_II = "SOC 2 Type II"
+    ISO_27001 = "ISO 27001"
+    ARCHITECTURE_DIAGRAM = "Architecture Diagram"
+
+
+class AssessmentDocumentSystemType(StrEnum):
+    SOC2_TYPE_II = "SOC 2 Type II"
+    ISO_27001 = "ISO 27001"
+    ARCHITECTURE_DIAGRAM = "Architecture Diagram"
+    UNCLASSIFIED = "Unclassified"
+
+
+class ChecklistVerdict(StrEnum):
+    REQUIRED = "Required"
+    RECOMMENDED = "Recommended"
+    NOT_APPLICABLE = "N/A"
+
+
+class DocumentChecklistRunStatus(StrEnum):
+    DRAFT = "draft"
+    DRAFT_WITH_LIMITATIONS = "draft_with_limitations"
+    SUBMITTED = "submitted"
+    FAILED = "failed"
+
+
+class DocumentChecklistSummaryStatus(StrEnum):
+    NOT_GENERATED = "not_generated"
+    GENERATED = "generated"
+    FALLBACK = "fallback"
+    FAILED = "failed"

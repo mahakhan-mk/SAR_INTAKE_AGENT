@@ -34,6 +34,12 @@ class ExecutiveSummaryOutput(BaseModel):
     summary: str
 
 
+class DocumentChecklistSummaryOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    summary_text: str
+
+
 @dataclass(frozen=True)
 class AzureOpenAIClientSettings:
     endpoint: str
@@ -95,11 +101,16 @@ class AzureExecutiveSummaryClient:
     ) -> str:
         user_prompt = prompt.render_user_prompt(payload)
         last_validation_error: ValidationError | None = None
+        output_model = (
+            DocumentChecklistSummaryOutput
+            if prompt.response_field == "summary_text"
+            else ExecutiveSummaryOutput
+        )
 
         for attempt in range(2):
-            raw_text = self._create_response(prompt.system, user_prompt)
+            raw_text = self._create_response(prompt, user_prompt, output_model)
             try:
-                parsed = ExecutiveSummaryOutput.model_validate_json(raw_text)
+                parsed = output_model.model_validate_json(raw_text)
             except ValidationError as exc:
                 logger.exception(
                     "Azure OpenAI executive summary response parsing failed for deployment=%s configured_api_version=%s attempt=%s",
@@ -112,21 +123,26 @@ class AzureExecutiveSummaryClient:
                     continue
                 raise InvalidSummaryOutputError("Azure OpenAI returned invalid structured output.") from exc
 
-            return parsed.summary.strip()
+            return getattr(parsed, prompt.response_field).strip()
 
         raise InvalidSummaryOutputError("Azure OpenAI returned invalid structured output.") from last_validation_error
 
-    def _create_response(self, system_prompt: str, user_prompt: str) -> str:
+    def _create_response(
+        self,
+        prompt: ExecutiveSummaryPromptConfig,
+        user_prompt: str,
+        output_model: type[BaseModel],
+    ) -> str:
         try:
             response = self._client.responses.create(
                 model=self.settings.deployment,
-                instructions=system_prompt,
+                instructions=prompt.system,
                 input=user_prompt,
                 text={
                     "format": {
                         "type": "json_schema",
-                        "name": "executive_summary_response",
-                        "schema": ExecutiveSummaryOutput.model_json_schema(),
+                        "name": f"{prompt.id}_response",
+                        "schema": output_model.model_json_schema(),
                         "strict": True,
                     }
                 },
