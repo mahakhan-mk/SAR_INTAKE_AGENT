@@ -6,7 +6,7 @@ import pytest
 
 from app.models.enums import RiskLevel
 from app.repositories.assessment_repository import AssessmentRepository
-from tests.conftest import add_question_with_option, add_questionnaire_version, add_response
+from tests.conftest import add_question_with_option, add_question_with_options, add_questionnaire_version, add_response
 
 pytestmark = pytest.mark.asyncio
 
@@ -188,6 +188,36 @@ async def test_load_intake_overview_joins_selected_option_label_into_answer(
     assert intake_question.answer == "Selected option"
     assert intake_question.response_type == "single_select"
     assert intake_question.selected_option_id == option.id
+
+
+async def test_load_intake_overview_preserves_free_text_answer(db_session, seeded_assessment):
+    intake_version = await add_questionnaire_version(
+        db_session,
+        questionnaire_type="intake",
+        version="intake-v1",
+    )
+    question, _ = await add_question_with_options(
+        db_session,
+        intake_version.id,
+        risk_domain="Operations",
+        response_type="text",
+        question_code="INTAKE-TEXT",
+        prompt="Describe the workflow",
+        options=[("Selected", RiskLevel.LOW, 0.0, "Low signal")],
+    )
+    await add_response(
+        db_session,
+        seeded_assessment["assessment_id"],
+        question,
+        option=None,
+        answer_value="Free text answer",
+    )
+
+    overview = await AssessmentRepository().load_intake_overview(db_session, seeded_assessment["assessment_id"])
+
+    assert overview is not None
+    assert overview.sections[0].questions[0].answer == "Free text answer"
+    assert overview.sections[0].questions[0].selected_option_id is None
 
 
 async def test_load_intake_overview_returns_none_when_assessment_is_missing(db_session):

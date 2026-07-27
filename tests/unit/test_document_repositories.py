@@ -385,6 +385,76 @@ async def test_document_checklist_repository_appends_and_loads_latest_verdict_re
     assert latest_reviews[DocumentType.ARCHITECTURE_DIAGRAM.value].id == architecture_review.id
 
 
+async def test_document_checklist_repository_returns_latest_run_from_standardized_method(
+    db_session,
+    seeded_assessment,
+):
+    repository = DocumentChecklistRepository()
+    first = await repository.create_checklist_run(
+        db_session,
+        assessment_id=seeded_assessment["assessment_id"],
+        items=[
+            ChecklistItemInput(DocumentType.SOC2_TYPE_II, ChecklistVerdict.RECOMMENDED, 1),
+            ChecklistItemInput(DocumentType.ISO_27001, ChecklistVerdict.RECOMMENDED, 2),
+            ChecklistItemInput(DocumentType.ARCHITECTURE_DIAGRAM, ChecklistVerdict.RECOMMENDED, 3),
+        ],
+    )
+    second = await repository.create_checklist_run(
+        db_session,
+        assessment_id=seeded_assessment["assessment_id"],
+        items=[
+            ChecklistItemInput(DocumentType.SOC2_TYPE_II, ChecklistVerdict.REQUIRED, 1),
+            ChecklistItemInput(DocumentType.ISO_27001, ChecklistVerdict.RECOMMENDED, 2),
+            ChecklistItemInput(DocumentType.ARCHITECTURE_DIAGRAM, ChecklistVerdict.NOT_APPLICABLE, 3),
+        ],
+    )
+    first.run.created_at = datetime(2026, 7, 20, 12, 0, tzinfo=timezone.utc)
+    second.run.created_at = datetime(2026, 7, 21, 12, 0, tzinfo=timezone.utc)
+    await db_session.commit()
+
+    latest = await repository.get_latest_assessment_checklist_run_with_items(
+        db_session,
+        seeded_assessment["assessment_id"],
+    )
+
+    assert latest is not None
+    assert latest.run.id == second.run.id
+
+
+async def test_document_repository_returns_latest_active_document_by_type(db_session, seeded_assessment):
+    repository = DocumentRepository()
+    older = create_document(
+        assessment_id=seeded_assessment["assessment_id"],
+        filename="older-soc2.pdf",
+        system_document_type=DocumentType.SOC2_TYPE_II.value,
+        created_at=datetime(2026, 7, 20, 12, 0, tzinfo=timezone.utc),
+    )
+    latest = create_document(
+        assessment_id=seeded_assessment["assessment_id"],
+        filename="latest-soc2.pdf",
+        system_document_type=DocumentType.SOC2_TYPE_II.value,
+        created_at=datetime(2026, 7, 21, 12, 0, tzinfo=timezone.utc),
+    )
+    deleted = create_document(
+        assessment_id=seeded_assessment["assessment_id"],
+        filename="deleted-soc2.pdf",
+        system_document_type=DocumentType.SOC2_TYPE_II.value,
+        created_at=datetime(2026, 7, 22, 12, 0, tzinfo=timezone.utc),
+        deleted_at=datetime(2026, 7, 22, 13, 0, tzinfo=timezone.utc),
+    )
+    db_session.add_all([older, latest, deleted])
+    await db_session.commit()
+
+    document = await repository.get_latest_active_document_for_assessment_type(
+        db_session,
+        assessment_id=seeded_assessment["assessment_id"],
+        system_document_type=DocumentType.SOC2_TYPE_II.value,
+    )
+
+    assert document is not None
+    assert document.id == latest.id
+
+
 async def test_vendor_certification_repository_reads_latest_eligible_hitl_review_with_reviewer_overrides(
     db_session,
     seeded_assessment,

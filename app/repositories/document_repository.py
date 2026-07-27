@@ -116,6 +116,24 @@ class DocumentRepository:
             )
         ).scalars().first()
 
+    async def get_latest_active_document_for_assessment_type(
+        self,
+        session: AsyncSession,
+        *,
+        assessment_id: UUID | str,
+        system_document_type: AssessmentDocumentSystemType | str,
+    ) -> AssessmentDocument | None:
+        return (
+            await session.execute(
+                select(AssessmentDocument).where(
+                    AssessmentDocument.assessment_id == self._coerce_uuid(assessment_id),
+                    AssessmentDocument.system_document_type == self.validate_system_document_type(system_document_type),
+                    AssessmentDocument.deleted_at.is_(None),
+                )
+                .order_by(AssessmentDocument.created_at.desc(), AssessmentDocument.id.desc())
+            )
+        ).scalars().first()
+
     async def list_active_documents_by_assessment(
         self,
         session: AsyncSession,

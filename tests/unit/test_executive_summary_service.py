@@ -227,3 +227,37 @@ async def test_invalid_analysis_run_status_raises_conflict(
 
     assert exc_info.value.status == status
     assert llm_client.calls == 0
+
+
+async def test_executive_summary_service_does_not_commit_or_rollback(
+    db_session,
+    seeded_assessment,
+    executive_summary_prompt_path,
+    monkeypatch,
+):
+    analysis_run_id = await seed_completed_analysis(db_session, seeded_assessment)
+    llm_client = SequencedSummaryClient(["Summary text."])
+    service = build_executive_summary_service(executive_summary_prompt_path, llm_client)
+    commit_calls = 0
+    rollback_calls = 0
+    original_commit = db_session.commit
+    original_rollback = db_session.rollback
+
+    async def commit_spy():
+        nonlocal commit_calls
+        commit_calls += 1
+        return await original_commit()
+
+    async def rollback_spy():
+        nonlocal rollback_calls
+        rollback_calls += 1
+        return await original_rollback()
+
+    monkeypatch.setattr(db_session, "commit", commit_spy)
+    monkeypatch.setattr(db_session, "rollback", rollback_spy)
+
+    response = await service.generate(db_session, seeded_assessment["assessment_id"], analysis_run_id)
+
+    assert response.executiveSummary.text == "Summary text."
+    assert commit_calls == 0
+    assert rollback_calls == 0

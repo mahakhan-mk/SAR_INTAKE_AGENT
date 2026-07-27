@@ -14,13 +14,13 @@ class ResponseRepository:
         self,
         session: AsyncSession,
         assessment_id: UUID | str,
-        question_definition_id: UUID | str,
+        question_id: UUID | str,
     ) -> AssessmentResponse | None:
         return (
             await session.execute(
                 select(AssessmentResponse).where(
                     AssessmentResponse.assessment_id == self._coerce_uuid(assessment_id),
-                    AssessmentResponse.question_definition_id == self._coerce_uuid(question_definition_id),
+                    AssessmentResponse.question_id == self._coerce_uuid(question_id),
                 )
             )
         ).scalars().first()
@@ -30,22 +30,19 @@ class ResponseRepository:
         session: AsyncSession,
         *,
         assessment_id: UUID | str,
-        question_definition_id: UUID | str,
-        selected_option_id: UUID | str | None,
-        answer_value: str | None,
+        question_id: UUID | str,
+        answer_value: object | None,
     ) -> AssessmentResponse:
-        response = await self.get_response(session, assessment_id, question_definition_id)
+        response = await self.get_response(session, assessment_id, question_id)
         if response is None:
             response = AssessmentResponse(
                 assessment_id=self._coerce_uuid(assessment_id),
-                question_definition_id=self._coerce_uuid(question_definition_id),
+                question_id=self._coerce_uuid(question_id),
                 answer_value=answer_value,
             )
-            response.selected_option_id = self._coerce_uuid(selected_option_id) if selected_option_id is not None else None
             session.add(response)
         else:
             response.answer_value = answer_value
-            response.selected_option_id = self._coerce_uuid(selected_option_id) if selected_option_id is not None else None
 
         await session.flush()
         return response

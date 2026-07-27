@@ -391,3 +391,40 @@ async def test_load_ai_analysis_view_returns_none_for_unknown_assessment(db_sess
     view = await AnalysisRepository().load_ai_analysis_view(db_session, uuid.uuid4())
 
     assert view is None
+
+
+async def test_get_latest_usable_analysis_run_orders_by_completed_then_created_then_id(
+    db_session,
+    seeded_assessment,
+):
+    base_time = datetime(2026, 7, 20, 12, 0, tzinfo=timezone.utc)
+    older = await create_run(
+        db_session,
+        assessment_id=seeded_assessment["assessment_id"],
+        status=AnalysisRunStatus.COMPLETED,
+        created_at=base_time,
+    )
+    latest_by_completed = await create_run(
+        db_session,
+        assessment_id=seeded_assessment["assessment_id"],
+        status=AnalysisRunStatus.COMPLETED_WITH_LIMITATIONS,
+        created_at=base_time + timedelta(minutes=1),
+    )
+    failed = await create_run(
+        db_session,
+        assessment_id=seeded_assessment["assessment_id"],
+        status=AnalysisRunStatus.FAILED,
+        created_at=base_time + timedelta(minutes=2),
+    )
+    older.completed_at = base_time
+    latest_by_completed.completed_at = base_time + timedelta(days=1)
+    failed.completed_at = base_time + timedelta(days=2)
+    await db_session.commit()
+
+    run = await AnalysisRepository().get_latest_usable_analysis_run(
+        db_session,
+        seeded_assessment["assessment_id"],
+    )
+
+    assert run is not None
+    assert run.id == latest_by_completed.id

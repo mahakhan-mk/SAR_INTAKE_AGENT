@@ -101,6 +101,14 @@ async def test_update_question_response_creates_then_updates_successfully(db_ses
     assert created.questionId == question.id
     assert created.selectedOptionId == options[0].id
     assert created.answerValue == "First"
+    stored_created = await db_session.scalar(select(AssessmentResponse))
+    assert stored_created is not None
+    assert stored_created.answer_value == {
+        "optionCode": options[0].option_code,
+        "optionLabel": options[0].option_label,
+        "selectedOptionId": str(options[0].id),
+    }
+    assert not hasattr(stored_created, "selected_option_id")
 
     updated = await service.update_question_response(
         db_session,
@@ -112,6 +120,11 @@ async def test_update_question_response_creates_then_updates_successfully(db_ses
     assert updated.questionId == question.id
     assert updated.selectedOptionId is None
     assert updated.answerValue == "Updated"
+    db_session.expire_all()
+    reloaded = await db_session.scalar(select(AssessmentResponse))
+    assert reloaded is not None
+    assert reloaded.answer_value == "Updated"
+    assert not hasattr(reloaded, "selected_option_id")
 
 
 async def test_update_question_response_rejects_invalid_question(db_session, seeded_assessment):
@@ -195,9 +208,49 @@ async def test_update_question_response_allows_explicit_null_clearing(db_session
     assert updated.questionId == question.id
     assert updated.selectedOptionId is None
     assert updated.answerValue is None
+    stored = await db_session.scalar(select(AssessmentResponse))
+    assert stored is not None
+    assert stored.answer_value is None
 
 
-async def test_update_question_response_rolls_back_on_failure(db_session, seeded_assessment, monkeypatch):
+async def test_update_question_response_selected_option_id_survives_database_reload(db_session, seeded_assessment):
+    question, options = await add_question_with_options(
+        db_session,
+        seeded_assessment["questionnaire_version_id"],
+        risk_domain="Security",
+        options=[("Selected", RiskLevel.HIGH, 3.0, "High signal")],
+    )
+    service = build_service()
+
+    await service.update_question_response(
+        db_session,
+        assessment_id=seeded_assessment["assessment_id"],
+        question_id=question.id,
+        payload=IntakeQuestionUpdateRequestDTO(selectedOptionId=options[0].id),
+    )
+
+    expected_option_code = options[0].option_code
+    expected_option_label = options[0].option_label
+    expected_option_id = options[0].id
+    db_session.expire_all()
+    reloaded = await db_session.scalar(select(AssessmentResponse))
+    assert reloaded is not None
+    assert reloaded.answer_value == {
+        "optionCode": expected_option_code,
+        "optionLabel": expected_option_label,
+        "selectedOptionId": str(expected_option_id),
+    }
+    assert build_service()._extract_selected_option_id(
+        reloaded.answer_value,
+        AssessmentRepository().normalize_answer_value(reloaded.answer_value),
+    ) == expected_option_id
+
+
+async def test_update_question_response_service_does_not_manage_transaction_on_failure(
+    db_session,
+    seeded_assessment,
+    monkeypatch,
+):
     question, options = await add_question_with_options(
         db_session,
         seeded_assessment["questionnaire_version_id"],
@@ -210,13 +263,21 @@ async def test_update_question_response_rolls_back_on_failure(db_session, seeded
             raise RuntimeError("Persistence failed.")
 
     rollback_calls = 0
+    commit_calls = 0
+    original_commit = db_session.commit
     original_rollback = db_session.rollback
+
+    async def commit_spy():
+        nonlocal commit_calls
+        commit_calls += 1
+        return await original_commit()
 
     async def rollback_spy():
         nonlocal rollback_calls
         rollback_calls += 1
         return await original_rollback()
 
+    monkeypatch.setattr(db_session, "commit", commit_spy)
     monkeypatch.setattr(db_session, "rollback", rollback_spy)
     service = build_service(response_repository=FailingResponseRepository())
 
@@ -228,4 +289,5 @@ async def test_update_question_response_rolls_back_on_failure(db_session, seeded
             payload=IntakeQuestionUpdateRequestDTO(selectedOptionId=options[0].id),
         )
 
-    assert rollback_calls == 1
+    assert rollback_calls == 0
+    assert commit_calls == 0

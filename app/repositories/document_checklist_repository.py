@@ -84,6 +84,13 @@ class DocumentChecklistRepository:
         session: AsyncSession,
         assessment_id: UUID | str,
     ) -> DocumentChecklistRunRecord | None:
+        return await self.get_latest_assessment_checklist_run_with_items(session, assessment_id)
+
+    async def get_latest_assessment_checklist_run_with_items(
+        self,
+        session: AsyncSession,
+        assessment_id: UUID | str,
+    ) -> DocumentChecklistRunRecord | None:
         run = (
             await session.execute(
                 select(DocumentChecklistRun)
