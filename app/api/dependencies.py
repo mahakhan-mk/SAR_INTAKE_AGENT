@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.assemblers.intake_assembler import IntakeAssembler
 from app.assemblers.inherent_risk_assembler import InherentRiskAssembler
 from app.assemblers.report_preview_assembler import ReportPreviewAssembler
-from app.config import DEFAULT_INHERENT_RISK_SCORING_POLICY, InherentRiskScoringPolicy
+from app.config import DEFAULT_INHERENT_RISK_SCORING_POLICY, InherentRiskScoringPolicy, get_settings
 from app.database import get_db
 from app.llm.client import AzureExecutiveSummaryClient
 from app.llm.executive_summary import ExecutiveSummaryPromptLoader
@@ -12,8 +12,12 @@ from app.repositories.analysis_repository import AnalysisRepository
 from app.repositories.assessment_repository import AssessmentRepository
 from app.repositories.document_checklist_repository import DocumentChecklistRepository
 from app.repositories.document_repository import DocumentRepository
+from app.repositories.report_repository import InitialSarReportRepository
 from app.repositories.response_repository import ResponseRepository
 from app.services.executive_summary_service import ExecutiveSummaryService
+from app.services.initial_sar_report_generation_service import InitialSarReportGenerationService
+from app.services.initial_sar_report_renderer import InitialSarReportRenderer
+from app.services.initial_sar_report_storage import AzureBlobInitialSarReportStorage, InitialSarReportStorage
 from app.services.intake_service import IntakeService
 from app.services.inherent_risk_service import InherentRiskService
 from app.services.report_service import ReportPreviewService
@@ -39,6 +43,10 @@ def get_document_repository() -> DocumentRepository:
     return DocumentRepository()
 
 
+def get_initial_sar_report_repository() -> InitialSarReportRepository:
+    return InitialSarReportRepository()
+
+
 def get_document_checklist_repository() -> DocumentChecklistRepository:
     return DocumentChecklistRepository()
 
@@ -53,6 +61,10 @@ def get_inherent_risk_assembler() -> InherentRiskAssembler:
 
 def get_report_preview_assembler() -> ReportPreviewAssembler:
     return ReportPreviewAssembler()
+
+
+def get_initial_sar_report_renderer() -> InitialSarReportRenderer:
+    return InitialSarReportRenderer()
 
 
 def get_inherent_risk_scoring_policy() -> InherentRiskScoringPolicy:
@@ -122,4 +134,24 @@ def get_report_preview_service(
         checklist_repository=checklist_repository,
         document_repository=document_repository,
         assembler=assembler,
+    )
+
+
+def get_initial_sar_report_storage() -> InitialSarReportStorage:
+    return AzureBlobInitialSarReportStorage.from_settings(get_settings())
+
+
+def get_initial_sar_report_generation_service(
+    preview_service: ReportPreviewService = Depends(get_report_preview_service),
+    renderer: InitialSarReportRenderer = Depends(get_initial_sar_report_renderer),
+    storage: InitialSarReportStorage = Depends(get_initial_sar_report_storage),
+    repository: InitialSarReportRepository = Depends(get_initial_sar_report_repository),
+    document_repository: DocumentRepository = Depends(get_document_repository),
+) -> InitialSarReportGenerationService:
+    return InitialSarReportGenerationService(
+        preview_service=preview_service,
+        renderer=renderer,
+        storage=storage,
+        repository=repository,
+        document_repository=document_repository,
     )
