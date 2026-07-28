@@ -16,7 +16,8 @@ from app.llm.client import (
 )
 from app.llm.executive_summary import ExecutiveSummaryPromptConfig, ExecutiveSummaryPromptLoader
 from app.models.database import QuestionAnalysisRun
-from app.models.enums import ExecutiveSummaryStatus, RiskLevel
+from app.models.dto import TopRiskDriverState
+from app.models.enums import AnalysisRunStatus, ExecutiveSummaryStatus, RiskLevel
 from app.repositories.analysis_repository import AnalysisRepository
 from app.repositories.assessment_repository import AssessmentRepository
 from app.services.executive_summary_service import ExecutiveSummaryService
@@ -192,6 +193,95 @@ async def test_mocked_azure_client_only_no_live_call(db_session, seeded_assessme
 
     assert response.executiveSummary.text == "Summary text."
     assert llm_client.calls == 1
+
+
+async def test_input_payload_uses_inherent_risk_top_driver_derivation(
+    executive_summary_prompt_path,
+    monkeypatch,
+):
+    llm_client = SequencedSummaryClient(["Summary text."])
+    service = build_executive_summary_service(executive_summary_prompt_path, llm_client)
+    question_results = [object()]
+    snapshot = SimpleNamespace(
+        inherent_risk_level=RiskLevel.LOW,
+        question_results=question_results,
+        status=AnalysisRunStatus.COMPLETED,
+        error_summary=None,
+    )
+    assessment = SimpleNamespace(
+        technology_name="Synthetic technology",
+        vendor_name="Synthetic vendor",
+        product_name="Synthetic product",
+    )
+    captured: dict[str, object] = {}
+
+    def fake_derive_top_risk_drivers(results):
+        captured["question_results"] = results
+        return [
+            TopRiskDriverState(domain="domain-alpha", level=RiskLevel.CRITICAL),
+            TopRiskDriverState(domain="domain-beta", level=RiskLevel.HIGH),
+            TopRiskDriverState(domain="domain-delta", level=RiskLevel.HIGH),
+            TopRiskDriverState(domain="domain-epsilon", level=RiskLevel.HIGH),
+        ]
+
+    monkeypatch.setattr(service.inherent_risk_service, "derive_top_risk_drivers", fake_derive_top_risk_drivers)
+
+    payload = service._build_input_payload(assessment, snapshot)
+
+    assert captured["question_results"] is question_results
+    assert payload == {
+        "technologyName": "Synthetic technology",
+        "vendorName": "Synthetic vendor",
+        "productName": "Synthetic product",
+        "overallRisk": RiskLevel.LOW.value,
+        "topRiskDrivers": [
+            {"domain": "domain-alpha", "level": RiskLevel.CRITICAL.value},
+            {"domain": "domain-beta", "level": RiskLevel.HIGH.value},
+            {"domain": "domain-delta", "level": RiskLevel.HIGH.value},
+            {"domain": "domain-epsilon", "level": RiskLevel.HIGH.value},
+        ],
+        "materialLimitations": None,
+    }
+    assert "inherentRiskLevel" not in payload
+    assert "highRiskQuestionCount" not in payload
+    assert "materialQuestions" not in payload
+    assert not hasattr(service, "_derive_top_risk_drivers")
+    assert not hasattr(service, "_top_material_questions")
+
+
+async def test_fallback_summary_uses_inherent_risk_top_driver_derivation(
+    executive_summary_prompt_path,
+    monkeypatch,
+):
+    llm_client = SequencedSummaryClient(["Summary text."])
+    service = build_executive_summary_service(executive_summary_prompt_path, llm_client)
+    question_results = [SimpleNamespace(risk_level=RiskLevel.HIGH)]
+    snapshot = SimpleNamespace(
+        inherent_risk_level=RiskLevel.CRITICAL,
+        question_results=question_results,
+        status=AnalysisRunStatus.COMPLETED,
+        error_summary=None,
+    )
+    assessment = SimpleNamespace(
+        technology_name="Synthetic technology",
+        vendor_name=None,
+        product_name="Synthetic product",
+    )
+    captured: dict[str, object] = {}
+
+    def fake_derive_top_risk_drivers(results):
+        captured["question_results"] = results
+        return [
+            TopRiskDriverState(domain="domain-alpha", level=RiskLevel.CRITICAL),
+            TopRiskDriverState(domain="domain-beta", level=RiskLevel.HIGH),
+        ]
+
+    monkeypatch.setattr(service.inherent_risk_service, "derive_top_risk_drivers", fake_derive_top_risk_drivers)
+
+    fallback = service._build_fallback_summary(assessment, snapshot)
+
+    assert captured["question_results"] is question_results
+    assert "The top risk drivers are domain-alpha, domain-beta." in fallback
 
 
 async def test_missing_analysis_run_pair_raises_not_found(db_session, seeded_assessment, executive_summary_prompt_path):

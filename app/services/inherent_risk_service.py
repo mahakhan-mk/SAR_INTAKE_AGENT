@@ -102,7 +102,7 @@ class InherentRiskService:
             status=snapshot.status,
             inherent_risk_level=snapshot.inherent_risk_level,
             high_risk_question_count=high_risk_count,
-            top_risk_drivers=self._derive_top_risk_drivers(snapshot.question_results),
+            top_risk_drivers=self.derive_top_risk_drivers(snapshot.question_results),
             executive_summary_status=snapshot.executive_summary_status,
             executive_summary_text=snapshot.executive_summary_text,
             executive_summary_generated_at=snapshot.executive_summary_generated_at,
@@ -250,7 +250,7 @@ class InherentRiskService:
             limitations.append(UNRESOLVED_LIMITATION)
         return limitations
 
-    def _derive_top_risk_drivers(
+    def derive_top_risk_drivers(
         self,
         question_results: Sequence[ComputedQuestionRisk],
     ) -> list[TopRiskDriverState]:
@@ -268,5 +268,5 @@ class InherentRiskService:
         ranked_domains.sort(key=lambda item: (-item[0], -item[1], item[2]))
         return [
             TopRiskDriverState(domain=domain, level=level)
-            for _, _, domain, level in ranked_domains[:3]
+            for _, _, domain, level in ranked_domains
         ]
