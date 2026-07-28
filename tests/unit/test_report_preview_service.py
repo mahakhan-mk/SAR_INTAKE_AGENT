@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from types import SimpleNamespace
 import uuid
 
 import pytest
 
+from app.assemblers.inherent_risk_assembler import InherentRiskAssembler
 from app.assemblers.report_preview_assembler import ReportPreviewAssembler
+from app.config import PercentageInherentRiskScoringPolicy
+from app.models.dto import TopRiskDriverState
 from app.models.database import AssessmentDocument, QuestionAnalysisRun, QuestionRiskResult
 from app.models.enums import (
     AnalysisRunStatus,
@@ -18,6 +22,7 @@ from app.repositories.analysis_repository import AnalysisRepository
 from app.repositories.assessment_repository import AssessmentRepository
 from app.repositories.document_checklist_repository import ChecklistItemInput, DocumentChecklistRepository
 from app.repositories.document_repository import DocumentRepository
+from app.services.inherent_risk_service import InherentRiskService
 from app.services.report_service import ReportPreviewService
 from tests.conftest import add_question_with_options, add_questionnaire_version, add_response
 
@@ -30,13 +35,25 @@ def build_service(
     analysis_repository: AnalysisRepository | None = None,
     checklist_repository: DocumentChecklistRepository | None = None,
     document_repository: DocumentRepository | None = None,
+    inherent_risk_service: InherentRiskService | None = None,
+    assembler: ReportPreviewAssembler | None = None,
 ) -> ReportPreviewService:
     return ReportPreviewService(
         assessment_repository=assessment_repository or AssessmentRepository(),
         analysis_repository=analysis_repository or AnalysisRepository(),
         checklist_repository=checklist_repository or DocumentChecklistRepository(),
         document_repository=document_repository or DocumentRepository(),
-        assembler=ReportPreviewAssembler(),
+        inherent_risk_service=inherent_risk_service or build_inherent_risk_service(),
+        assembler=assembler or ReportPreviewAssembler(),
+    )
+
+
+def build_inherent_risk_service() -> InherentRiskService:
+    return InherentRiskService(
+        assessment_repository=AssessmentRepository(),
+        analysis_repository=AnalysisRepository(),
+        assembler=InherentRiskAssembler(),
+        scoring_policy=PercentageInherentRiskScoringPolicy(),
     )
 
 
@@ -95,6 +112,126 @@ async def test_get_report_preview_service_does_not_trigger_generation_or_blob_ac
     payload = dto.model_dump(mode="json", serialize_as_any=True)
     assert payload["architecture"]["documentId"] == str(TEST_ARCHITECTURE_DOCUMENT_ID)
     assert payload["documentChecklist"]["summary"] == "Checklist summary text."
+
+
+async def test_report_preview_service_injects_and_uses_inherent_risk_deriver(db_session):
+    assessment_id = uuid.uuid4()
+    question_results = [object()]
+    analysis_snapshot = SimpleNamespace(
+        inherent_risk_level=RiskLevel.HIGH,
+        executive_summary_text="Summary text.",
+        status=AnalysisRunStatus.COMPLETED,
+        question_results=question_results,
+    )
+    captured: dict[str, object] = {}
+    drivers = [
+        TopRiskDriverState(domain="domain-alpha", level=RiskLevel.CRITICAL),
+        TopRiskDriverState(domain="domain-beta", level=RiskLevel.HIGH),
+        TopRiskDriverState(domain="domain-delta", level=RiskLevel.HIGH),
+        TopRiskDriverState(domain="domain-epsilon", level=RiskLevel.HIGH),
+    ]
+
+    class FakeAssessmentRepository:
+        async def get_assessment(self, session, requested_assessment_id):
+            return SimpleNamespace(id=requested_assessment_id, technology_name="Synthetic technology")
+
+        async def load_intake_overview(self, session, requested_assessment_id):
+            return None
+
+        async def list_visible_assessment_responses(self, session, requested_assessment_id):
+            return []
+
+    class FakeAnalysisRepository:
+        async def get_latest_usable_analysis_run(self, session, requested_assessment_id):
+            return SimpleNamespace(id=uuid.uuid4())
+
+        async def get_snapshot_for_run(self, session, run):
+            return analysis_snapshot
+
+    class FakeChecklistRepository:
+        async def get_latest_checklist_run_with_items(self, session, requested_assessment_id):
+            return None
+
+    class FakeDocumentRepository:
+        async def get_latest_active_document_for_assessment_type(self, *args, **kwargs):
+            return None
+
+    class FakeInherentRiskService:
+        def derive_top_risk_drivers(self, results):
+            captured["question_results"] = results
+            return drivers
+
+    class CapturingAssembler:
+        def to_dto(self, **kwargs):
+            captured["analysis_snapshot"] = kwargs["analysis_snapshot"]
+            return kwargs["analysis_snapshot"]
+
+    service = build_service(
+        assessment_repository=FakeAssessmentRepository(),
+        analysis_repository=FakeAnalysisRepository(),
+        checklist_repository=FakeChecklistRepository(),
+        document_repository=FakeDocumentRepository(),
+        inherent_risk_service=FakeInherentRiskService(),
+        assembler=CapturingAssembler(),
+    )
+
+    result = await service.get_report_preview(db_session, assessment_id)
+
+    assert service.inherent_risk_service.__class__ is FakeInherentRiskService
+    assert captured["question_results"] is question_results
+    assert result is captured["analysis_snapshot"]
+    assert result.inherent_risk_level == RiskLevel.HIGH
+    assert result.executive_summary_text == "Summary text."
+    assert result.status == AnalysisRunStatus.COMPLETED
+    assert result.top_risk_drivers == drivers
+
+
+async def test_report_preview_service_passes_none_when_no_analysis_snapshot(db_session):
+    assessment_id = uuid.uuid4()
+    captured: dict[str, object] = {}
+
+    class FakeAssessmentRepository:
+        async def get_assessment(self, session, requested_assessment_id):
+            return SimpleNamespace(id=requested_assessment_id, technology_name="Synthetic technology")
+
+        async def load_intake_overview(self, session, requested_assessment_id):
+            return None
+
+        async def list_visible_assessment_responses(self, session, requested_assessment_id):
+            return []
+
+    class FakeAnalysisRepository:
+        async def get_latest_usable_analysis_run(self, session, requested_assessment_id):
+            return None
+
+    class FakeChecklistRepository:
+        async def get_latest_checklist_run_with_items(self, session, requested_assessment_id):
+            return None
+
+    class FakeDocumentRepository:
+        async def get_latest_active_document_for_assessment_type(self, *args, **kwargs):
+            return None
+
+    class GuardInherentRiskService:
+        def derive_top_risk_drivers(self, results):
+            raise AssertionError("No analysis snapshot should not derive top risk drivers.")
+
+    class CapturingAssembler:
+        def to_dto(self, **kwargs):
+            captured["analysis_snapshot"] = kwargs["analysis_snapshot"]
+            return kwargs["analysis_snapshot"]
+
+    result = await build_service(
+        assessment_repository=FakeAssessmentRepository(),
+        analysis_repository=FakeAnalysisRepository(),
+        checklist_repository=FakeChecklistRepository(),
+        document_repository=FakeDocumentRepository(),
+        inherent_risk_service=GuardInherentRiskService(),
+        assembler=CapturingAssembler(),
+    ).get_report_preview(db_session, assessment_id)
+
+    assert result is None
+    assert captured["analysis_snapshot"] is None
 
 
 TEST_ARCHITECTURE_DOCUMENT_ID = uuid.UUID("00000000-0000-0000-0000-000000000301")

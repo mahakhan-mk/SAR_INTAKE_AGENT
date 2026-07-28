@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import inspect
 from types import SimpleNamespace
 from uuid import UUID
 
 from app.assemblers.report_preview_assembler import ReportPreviewAssembler
+from app.models.dto import TopRiskDriverState
 from app.models.enums import AnalysisRunStatus, RiskLevel
 
 
@@ -29,6 +31,10 @@ def build_analysis_snapshot() -> SimpleNamespace:
         status=AnalysisRunStatus.COMPLETED_WITH_LIMITATIONS,
         inherent_risk_level=RiskLevel.HIGH,
         executive_summary_text="Deterministic executive summary.",
+        top_risk_drivers=[
+            TopRiskDriverState(domain="Security", level=RiskLevel.CRITICAL),
+            TopRiskDriverState(domain="Operations", level=RiskLevel.HIGH),
+        ],
         question_results=[
             SimpleNamespace(
                 risk_domain="Security",
@@ -405,3 +411,147 @@ def test_architecture_details_remains_null_when_no_mapped_response_exists():
 
     assert payload["architecture"]["architectureDetails"] is None
     assert payload["architecture"]["filename"] == "architecture-diagram.pdf"
+
+
+def test_explicit_top_risk_drivers_are_serialized_with_enum_values():
+    assembler = ReportPreviewAssembler()
+    analysis_snapshot = SimpleNamespace(
+        status=AnalysisRunStatus.COMPLETED,
+        inherent_risk_level=RiskLevel.CRITICAL,
+        executive_summary_text="Summary text.",
+        top_risk_drivers=[
+            TopRiskDriverState(domain="domain-alpha", level=RiskLevel.CRITICAL),
+            TopRiskDriverState(domain="domain-beta", level=RiskLevel.HIGH),
+            {"domain": "domain-gamma", "level": RiskLevel.MEDIUM},
+            {"domain": "domain-delta", "level": "low"},
+        ],
+    )
+
+    dto = assembler.to_dto(
+        assessment=build_assessment(),
+        response_records=[],
+        analysis_snapshot=analysis_snapshot,
+    )
+    payload = dto.model_dump(mode="json", serialize_as_any=True)
+
+    assert payload["riskAssessment"]["topRiskDrivers"] == [
+        {"domain": "domain-alpha", "level": "critical"},
+        {"domain": "domain-beta", "level": "high"},
+        {"domain": "domain-gamma", "level": "medium"},
+        {"domain": "domain-delta", "level": "low"},
+    ]
+
+
+def test_missing_or_none_top_risk_drivers_returns_empty_list():
+    assembler = ReportPreviewAssembler()
+    missing_snapshot = SimpleNamespace(
+        status=AnalysisRunStatus.COMPLETED,
+        inherent_risk_level=RiskLevel.HIGH,
+        executive_summary_text="Summary text.",
+    )
+    none_snapshot = SimpleNamespace(
+        status=AnalysisRunStatus.COMPLETED,
+        inherent_risk_level=RiskLevel.HIGH,
+        executive_summary_text="Summary text.",
+        top_risk_drivers=None,
+    )
+
+    missing_dto = assembler.to_dto(
+        assessment=build_assessment(),
+        response_records=[],
+        analysis_snapshot=missing_snapshot,
+    )
+    none_dto = assembler.to_dto(
+        assessment=build_assessment(),
+        response_records=[],
+        analysis_snapshot=none_snapshot,
+    )
+
+    assert missing_dto.model_dump(mode="json", serialize_as_any=True)["riskAssessment"]["topRiskDrivers"] == []
+    assert none_dto.model_dump(mode="json", serialize_as_any=True)["riskAssessment"]["topRiskDrivers"] == []
+
+
+def test_malformed_top_risk_drivers_are_skipped():
+    assembler = ReportPreviewAssembler()
+    analysis_snapshot = SimpleNamespace(
+        status=AnalysisRunStatus.COMPLETED,
+        inherent_risk_level=RiskLevel.HIGH,
+        executive_summary_text="Summary text.",
+        top_risk_drivers=[
+            {"domain": "domain-alpha", "level": RiskLevel.HIGH},
+            {"domain": "missing-level"},
+            {"level": RiskLevel.CRITICAL},
+            SimpleNamespace(domain=None, level=RiskLevel.CRITICAL),
+            SimpleNamespace(domain="missing-level", level=None),
+        ],
+    )
+
+    dto = assembler.to_dto(
+        assessment=build_assessment(),
+        response_records=[],
+        analysis_snapshot=analysis_snapshot,
+    )
+    payload = dto.model_dump(mode="json", serialize_as_any=True)
+
+    assert payload["riskAssessment"]["topRiskDrivers"] == [
+        {"domain": "domain-alpha", "level": "high"},
+    ]
+
+
+def test_question_results_are_not_used_to_derive_top_risk_drivers():
+    assembler = ReportPreviewAssembler()
+    analysis_snapshot = SimpleNamespace(
+        status=AnalysisRunStatus.COMPLETED,
+        inherent_risk_level=RiskLevel.HIGH,
+        executive_summary_text="Summary text.",
+        top_risk_drivers=None,
+        question_results=[
+            SimpleNamespace(risk_domain="domain-alpha", risk_level=RiskLevel.CRITICAL, risk_weight=4.0),
+            SimpleNamespace(risk_domain="domain-beta", risk_level=RiskLevel.HIGH, risk_weight=3.0),
+        ],
+    )
+
+    dto = assembler.to_dto(
+        assessment=build_assessment(),
+        response_records=[],
+        analysis_snapshot=analysis_snapshot,
+    )
+    payload = dto.model_dump(mode="json", serialize_as_any=True)
+
+    assert payload["riskAssessment"]["topRiskDrivers"] == []
+
+
+def test_camel_case_top_risk_drivers_are_supported():
+    assembler = ReportPreviewAssembler()
+    analysis_snapshot = SimpleNamespace(
+        status=AnalysisRunStatus.COMPLETED,
+        inherent_risk_level=RiskLevel.HIGH,
+        executive_summary_text="Summary text.",
+        topRiskDrivers=[
+            {"domain": "domain-alpha", "level": RiskLevel.CRITICAL},
+        ],
+    )
+
+    dto = assembler.to_dto(
+        assessment=build_assessment(),
+        response_records=[],
+        analysis_snapshot=analysis_snapshot,
+    )
+    payload = dto.model_dump(mode="json", serialize_as_any=True)
+
+    assert payload["riskAssessment"]["topRiskDrivers"] == [
+        {"domain": "domain-alpha", "level": "critical"},
+    ]
+
+
+def test_top_risk_driver_mapper_contains_no_derivation_logic():
+    method_source = inspect.getsource(ReportPreviewAssembler._derive_top_risk_drivers)
+
+    assert "question_results" not in method_source
+    assert "questionResults" not in method_source
+    assert "RiskLevel" not in method_source
+    assert "group" not in method_source
+    assert "rank" not in method_source
+    assert "sort" not in method_source
+    assert "[:3]" not in method_source
+    assert not hasattr(ReportPreviewAssembler, "_coerce_risk_level")

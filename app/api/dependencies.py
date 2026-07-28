@@ -126,6 +126,7 @@ def get_report_preview_service(
     analysis_repository: AnalysisRepository = Depends(get_analysis_repository),
     checklist_repository: DocumentChecklistRepository = Depends(get_document_checklist_repository),
     document_repository: DocumentRepository = Depends(get_document_repository),
+    inherent_risk_service: InherentRiskService = Depends(get_inherent_risk_service),
     assembler: ReportPreviewAssembler = Depends(get_report_preview_assembler),
 ) -> ReportPreviewService:
     return ReportPreviewService(
@@ -133,6 +134,7 @@ def get_report_preview_service(
         analysis_repository=analysis_repository,
         checklist_repository=checklist_repository,
         document_repository=document_repository,
+        inherent_risk_service=inherent_risk_service,
         assembler=assembler,
     )
 

@@ -9,18 +9,28 @@ from app.api.errors import AssessmentNotFoundError
 from app.assemblers.report_preview_assembler import ReportPreviewAssembler
 from app.models.database import AssessmentDocument, DocumentChecklistItem, DocumentChecklistItemReview, DocumentChecklistRun
 from app.models.document_checklist import DocumentChecklistItemReadState, DocumentChecklistReadState
-from app.models.enums import AssessmentDocumentSystemType
+from app.models.dto import TopRiskDriverState
+from app.models.enums import AnalysisRunStatus, AssessmentDocumentSystemType, RiskLevel
 from app.models.report_preview import ReportPreviewResponseDTO
 from app.repositories.analysis_repository import AnalysisRepository
 from app.repositories.assessment_repository import AssessmentRepository
 from app.repositories.document_checklist_repository import DocumentChecklistRepository, DocumentChecklistRunRecord
 from app.repositories.document_repository import DocumentRepository
+from app.services.inherent_risk_service import InherentRiskService
 
 
 @dataclass(frozen=True)
 class ReportPreviewAssessmentMetadata:
     questionnaire_version: str | None
     source_system: str | None
+
+
+@dataclass(frozen=True)
+class ReportPreviewAnalysisState:
+    inherent_risk_level: RiskLevel
+    executive_summary_text: str | None
+    status: AnalysisRunStatus
+    top_risk_drivers: list[TopRiskDriverState]
 
 
 class ReportPreviewService:
@@ -31,12 +41,14 @@ class ReportPreviewService:
         analysis_repository: AnalysisRepository,
         checklist_repository: DocumentChecklistRepository,
         document_repository: DocumentRepository,
+        inherent_risk_service: InherentRiskService,
         assembler: ReportPreviewAssembler,
     ) -> None:
         self.assessment_repository = assessment_repository
         self.analysis_repository = analysis_repository
         self.checklist_repository = checklist_repository
         self.document_repository = document_repository
+        self.inherent_risk_service = inherent_risk_service
         self.assembler = assembler
 
     async def get_report_preview(
@@ -57,6 +69,18 @@ class ReportPreviewService:
             if latest_run is not None
             else None
         )
+        prepared_analysis_state = (
+            ReportPreviewAnalysisState(
+                inherent_risk_level=analysis_snapshot.inherent_risk_level,
+                executive_summary_text=analysis_snapshot.executive_summary_text,
+                status=analysis_snapshot.status,
+                top_risk_drivers=self.inherent_risk_service.derive_top_risk_drivers(
+                    analysis_snapshot.question_results
+                ),
+            )
+            if analysis_snapshot is not None
+            else None
+        )
 
         checklist_record = await self.checklist_repository.get_latest_checklist_run_with_items(session, assessment_id)
         checklist_state = (
@@ -74,7 +98,7 @@ class ReportPreviewService:
         return self.assembler.to_dto(
             assessment=assessment,
             response_records=response_records,
-            analysis_snapshot=analysis_snapshot,
+            analysis_snapshot=prepared_analysis_state,
             checklist_state=checklist_state,
             architecture_document=architecture_document,
             questionnaire_version=assessment_metadata.questionnaire_version,

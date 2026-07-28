@@ -6,7 +6,6 @@ from uuid import UUID
 
 from pydantic import ConfigDict
 
-from app.models.enums import RiskLevel
 from app.models.report_preview import (
     REPORT_PREVIEW_QUESTION_CODE_TO_FIELD_NAME,
     ReportPreviewArchitectureDTO,
@@ -208,41 +207,18 @@ class ReportPreviewAssembler:
         return limitations
 
     def _derive_top_risk_drivers(self, analysis_snapshot: object) -> list[dict[str, str]]:
-        explicit_drivers = self._read_attr(analysis_snapshot, "top_risk_drivers", "topRiskDrivers")
-        if explicit_drivers is not None:
-            drivers: list[dict[str, str]] = []
-            for driver in explicit_drivers:
-                domain = self._read_attr(driver, "domain")
-                level = self._enum_value(self._read_attr(driver, "level"))
-                if domain is None or level is None:
-                    continue
-                drivers.append({"domain": domain, "level": level})
-            return drivers
+        prepared_drivers = self._read_attr(analysis_snapshot, "top_risk_drivers", "topRiskDrivers")
+        if prepared_drivers is None:
+            return []
 
-        question_results = self._read_attr(analysis_snapshot, "question_results", "questionResults") or []
-        grouped: dict[str, list[object]] = {}
-        for result in question_results:
-            level = self._coerce_risk_level(self._read_attr(result, "risk_level", "riskLevel"))
-            domain = self._read_attr(result, "risk_domain", "riskDomain")
-            if level not in {RiskLevel.HIGH, RiskLevel.CRITICAL} or not domain:
+        drivers: list[dict[str, str]] = []
+        for driver in prepared_drivers:
+            domain = self._read_attr(driver, "domain")
+            level = self._enum_value(self._read_attr(driver, "level"))
+            if domain is None or level is None:
                 continue
-            grouped.setdefault(domain, []).append(result)
-
-        ranked: list[tuple[int, float, str, str]] = []
-        for domain, results in grouped.items():
-            levels = [
-                self._coerce_risk_level(self._read_attr(result, "risk_level", "riskLevel"))
-                for result in results
-            ]
-            highest_level = max((level for level in levels if level is not None), key=lambda value: value.rank)
-            highest_weight = max(
-                float(self._read_attr(result, "risk_weight", "riskWeight") or 0.0)
-                for result in results
-            )
-            ranked.append((highest_level.rank, highest_weight, domain, highest_level.value))
-
-        ranked.sort(key=lambda item: (-item[0], -item[1], item[2]))
-        return [{"domain": domain, "level": level} for _, _, domain, level in ranked[:3]]
+            drivers.append({"domain": domain, "level": level})
+        return drivers
 
     @staticmethod
     def _coerce_answer_to_string(value: object | None) -> str | None:
@@ -273,16 +249,6 @@ class ReportPreviewAssembler:
         if hasattr(value, "value"):
             return str(value.value)
         return str(value)
-
-    @classmethod
-    def _coerce_risk_level(cls, value: object | None) -> RiskLevel | None:
-        normalized = cls._enum_value(value)
-        if normalized is None:
-            return None
-        try:
-            return RiskLevel(normalized)
-        except ValueError:
-            return None
 
     @staticmethod
     def _coerce_uuid(value: UUID | str | None) -> UUID:
