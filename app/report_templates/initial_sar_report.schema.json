@@ -1,0 +1,85 @@
+{
+  "templateId": "initial-sar-report",
+  "templateVersion": "1.0",
+  "renderer": "docxtpl",
+  "sourceDto": "ReportPreviewResponseDTO",
+  "supportedOutputFormats": ["docx"],
+  "requiredContextKeys": [
+    "report_title",
+    "assessment_id",
+    "generated_at",
+    "technology_name",
+    "risk_status",
+    "inherent_risk_level"
+  ],
+  "optionalContextKeys": [
+    "vendor_name",
+    "product_name",
+    "requested_by",
+    "assessment_created_at",
+    "analysis_run_id",
+    "executive_summary",
+    "business_unit",
+    "sponsor_business_owner",
+    "launch_date",
+    "business_function_solution_overview",
+    "architecture_details",
+    "architecture_diagram",
+    "hosting_model",
+    "hosted_by",
+    "accessed_by",
+    "data_residency",
+    "confidentiality",
+    "integrity",
+    "data_flow",
+    "business_continuity_rating",
+    "rpo_rto",
+    "backup_and_restore",
+    "third_party_assessment",
+    "sla",
+    "checklist_run_id",
+    "checklist_status",
+    "checklist_summary",
+    "missing_required_count",
+    "vendor_reputation_status",
+    "vendor_reputation_summary"
+  ],
+  "repeatableContextKeys": {
+    "top_risk_drivers": [
+      "domain",
+      "risk_level",
+      "question",
+      "response",
+      "reason"
+    ],
+    "checklist_items": [
+      "document_type",
+      "verdict",
+      "file_status",
+      "filename",
+      "review_reason"
+    ],
+    "vendor_reputation_rows": [
+      "category",
+      "sentiment",
+      "interpretation",
+      "risk_impact",
+      "confidence",
+      "sources"
+    ],
+    "limitations": ["text"]
+  },
+  "imageContextKeys": {
+    "architecture_diagram": {
+      "required": false,
+      "acceptedMimeTypes": ["image/png", "image/jpeg"],
+      "maximumWidthInches": 6.2
+    }
+  },
+  "securityRules": [
+    "Do not include storage_container in the rendering context.",
+    "Do not include storage_key in the rendering context.",
+    "Do not include Blob URLs, connection strings, account keys, or SAS tokens.",
+    "Resolve document bytes through the backend storage adapter before rendering."
+  ]
+}

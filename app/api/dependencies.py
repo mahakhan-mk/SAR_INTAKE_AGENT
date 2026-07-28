@@ -3,16 +3,24 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.assemblers.intake_assembler import IntakeAssembler
 from app.assemblers.inherent_risk_assembler import InherentRiskAssembler
-from app.config import DEFAULT_INHERENT_RISK_SCORING_POLICY, InherentRiskScoringPolicy
+from app.assemblers.report_preview_assembler import ReportPreviewAssembler
+from app.config import DEFAULT_INHERENT_RISK_SCORING_POLICY, InherentRiskScoringPolicy, get_settings
 from app.database import get_db
 from app.llm.client import AzureExecutiveSummaryClient
 from app.llm.executive_summary import ExecutiveSummaryPromptLoader
 from app.repositories.analysis_repository import AnalysisRepository
 from app.repositories.assessment_repository import AssessmentRepository
+from app.repositories.document_checklist_repository import DocumentChecklistRepository
+from app.repositories.document_repository import DocumentRepository
+from app.repositories.report_repository import InitialSarReportRepository
 from app.repositories.response_repository import ResponseRepository
 from app.services.executive_summary_service import ExecutiveSummaryService
+from app.services.initial_sar_report_generation_service import InitialSarReportGenerationService
+from app.services.initial_sar_report_renderer import InitialSarReportRenderer
+from app.services.initial_sar_report_storage import AzureBlobInitialSarReportStorage, InitialSarReportStorage
 from app.services.intake_service import IntakeService
 from app.services.inherent_risk_service import InherentRiskService
+from app.services.report_service import ReportPreviewService
 
 
 def get_session(db: AsyncSession = Depends(get_db)) -> AsyncSession:
@@ -31,12 +39,32 @@ def get_response_repository() -> ResponseRepository:
     return ResponseRepository()
 
 
+def get_document_repository() -> DocumentRepository:
+    return DocumentRepository()
+
+
+def get_initial_sar_report_repository() -> InitialSarReportRepository:
+    return InitialSarReportRepository()
+
+
+def get_document_checklist_repository() -> DocumentChecklistRepository:
+    return DocumentChecklistRepository()
+
+
 def get_intake_assembler() -> IntakeAssembler:
     return IntakeAssembler()
 
 
 def get_inherent_risk_assembler() -> InherentRiskAssembler:
     return InherentRiskAssembler()
+
+
+def get_report_preview_assembler() -> ReportPreviewAssembler:
+    return ReportPreviewAssembler()
+
+
+def get_initial_sar_report_renderer() -> InitialSarReportRenderer:
+    return InitialSarReportRenderer()
 
 
 def get_inherent_risk_scoring_policy() -> InherentRiskScoringPolicy:
@@ -90,4 +118,42 @@ def get_executive_summary_service(
         inherent_risk_service=inherent_risk_service,
         prompt_loader=prompt_loader,
         llm_client=llm_client,
+    )
+
+
+def get_report_preview_service(
+    assessment_repository: AssessmentRepository = Depends(get_assessment_repository),
+    analysis_repository: AnalysisRepository = Depends(get_analysis_repository),
+    checklist_repository: DocumentChecklistRepository = Depends(get_document_checklist_repository),
+    document_repository: DocumentRepository = Depends(get_document_repository),
+    inherent_risk_service: InherentRiskService = Depends(get_inherent_risk_service),
+    assembler: ReportPreviewAssembler = Depends(get_report_preview_assembler),
+) -> ReportPreviewService:
+    return ReportPreviewService(
+        assessment_repository=assessment_repository,
+        analysis_repository=analysis_repository,
+        checklist_repository=checklist_repository,
+        document_repository=document_repository,
+        inherent_risk_service=inherent_risk_service,
+        assembler=assembler,
+    )
+
+
+def get_initial_sar_report_storage() -> InitialSarReportStorage:
+    return AzureBlobInitialSarReportStorage.from_settings(get_settings())
+
+
+def get_initial_sar_report_generation_service(
+    preview_service: ReportPreviewService = Depends(get_report_preview_service),
+    renderer: InitialSarReportRenderer = Depends(get_initial_sar_report_renderer),
+    storage: InitialSarReportStorage = Depends(get_initial_sar_report_storage),
+    repository: InitialSarReportRepository = Depends(get_initial_sar_report_repository),
+    document_repository: DocumentRepository = Depends(get_document_repository),
+) -> InitialSarReportGenerationService:
+    return InitialSarReportGenerationService(
+        preview_service=preview_service,
+        renderer=renderer,
+        storage=storage,
+        repository=repository,
+        document_repository=document_repository,
     )

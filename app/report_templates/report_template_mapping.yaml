@@ -1,0 +1,68 @@
+template_id: initial-sar-report
+template_version: "1.0"
+source_dto: ReportPreviewResponseDTO
+
+context:
+  report_title: "Initial Security Assessment Report"
+  assessment_id: assessmentId
+  generated_at: generatedAt
+
+  technology_name: assessment.technologyName
+  vendor_name: assessment.vendorName
+  product_name: assessment.productName
+  requested_by: assessment.requestedBy
+  assessment_created_at: assessment.createdAt
+
+  analysis_run_id: riskAssessment.analysisRunId
+  risk_status: riskAssessment.status
+  inherent_risk_level: riskAssessment.inherentRiskLevel
+  executive_summary: riskAssessment.executiveSummary
+  top_risk_drivers: riskAssessment.topRiskDrivers
+
+  business_unit: businessContactDetails.businessUnit
+  sponsor_business_owner: businessContactDetails.sponsorBusinessOwner
+
+  launch_date: solutionOverview.launchDate
+  business_function_solution_overview: solutionOverview.businessFunctionSolutionOverview
+
+  architecture_details: architecture.architectureDetails
+  architecture_document_id: architecture.diagramDocument.documentId
+  architecture_filename: architecture.diagramDocument.filename
+  architecture_content_type: architecture.diagramDocument.contentType
+  architecture_diagram: runtime-resolved-inline-image
+
+  hosting_model: hosting.hostingModel
+  hosted_by: hosting.hostedBy
+  accessed_by: hosting.accessedBy
+
+  data_residency: dataHosted.dataResidency
+  confidentiality: dataHosted.confidentiality
+  integrity: dataHosted.integrity
+
+  data_flow: dataFlow.dataFlow
+
+  business_continuity_rating: businessContinuity.businessContinuityRating
+  rpo_rto: businessContinuity.rpoRto
+  backup_and_restore: businessContinuity.backupAndRestore
+
+  third_party_assessment: thirdPartyMeasures.thirdPartyAssessment
+  sla: thirdPartyMeasures.sla
+
+  checklist_run_id: documentChecklist.runId
+  checklist_status: documentChecklist.status
+  checklist_summary: documentChecklist.summary
+  missing_required_count: documentChecklist.missingRequiredCount
+  checklist_items: documentChecklist.items
+
+  vendor_reputation_status: vendorReputation.status
+  vendor_reputation_summary: vendorReputation.summary
+  vendor_reputation_rows: vendorReputation.rows
+
+  limitations: limitations
+
+null_display: "Not provided"
+empty_list_behavior:
+  top_risk_drivers: "No risk drivers available."
+  checklist_items: "No checklist run available."
+  vendor_reputation_rows: "Vendor Reputation is not available."
+  limitations: "No limitations recorded."

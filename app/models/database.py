@@ -211,6 +211,40 @@ class AssessmentDocument(Base):
     )
 
 
+class InitialSarReport(Base):
+    __tablename__ = "initial_sar_report"
+    __table_args__ = (
+        CheckConstraint("file_size_bytes > 0", name="initial_sar_report_file_size_check"),
+        CheckConstraint("report_version >= 1", name="initial_sar_report_report_version_check"),
+        UniqueConstraint("assessment_id", "report_version", name="uq_initial_sar_report_assessment_version"),
+        UniqueConstraint("storage_container", "storage_key", name="uq_initial_sar_report_storage_object"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column("id", UUID_TYPE, primary_key=True, default=new_uuid)
+    assessment_id: Mapped[uuid.UUID] = mapped_column(
+        "assessment_id",
+        UUID_TYPE,
+        ForeignKey("sar_assessments.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    source_workflow_version: Mapped[int] = mapped_column("source_workflow_version", BigInteger, nullable=False)
+    report_version: Mapped[int] = mapped_column("report_version", Integer, nullable=False)
+    storage_container: Mapped[str] = mapped_column("storage_container", Text, nullable=False)
+    storage_key: Mapped[str] = mapped_column("storage_key", Text, nullable=False)
+    original_filename: Mapped[str] = mapped_column("original_filename", Text, nullable=False)
+    content_type: Mapped[str] = mapped_column("content_type", Text, nullable=False)
+    file_size_bytes: Mapped[int] = mapped_column("file_size_bytes", BigInteger, nullable=False)
+    sha256: Mapped[str] = mapped_column("sha256", Text, nullable=False)
+    limitations: Mapped[list[object]] = mapped_column(
+        "limitations",
+        JSONB_TYPE,
+        nullable=False,
+        server_default=text("'[]'"),
+    )
+    created_at: Mapped[datetime] = mapped_column("created_at", DateTime(timezone=True), server_default=func.now())
+    stale_at: Mapped[datetime | None] = mapped_column("stale_at", DateTime(timezone=True), nullable=True)
+
+
 class DocumentChecklistRun(Base):
     __tablename__ = "document_checklist_runs"
     __table_args__ = (
@@ -420,6 +454,18 @@ Index(
     unique=True,
     postgresql_where=AssessmentDocument.deleted_at.is_(None),
     sqlite_where=AssessmentDocument.deleted_at.is_(None),
+)
+Index(
+    "idx_initial_sar_report_current",
+    InitialSarReport.assessment_id,
+    InitialSarReport.created_at.desc(),
+    postgresql_where=InitialSarReport.stale_at.is_(None),
+    sqlite_where=InitialSarReport.stale_at.is_(None),
+)
+Index(
+    "idx_initial_sar_report_latest",
+    InitialSarReport.assessment_id,
+    InitialSarReport.report_version.desc(),
 )
 Index(
     "idx_document_checklist_runs_latest",

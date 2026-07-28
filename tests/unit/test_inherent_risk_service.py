@@ -9,6 +9,7 @@ from sqlalchemy import select
 from app.api.errors import AssessmentNotFoundError
 from app.assemblers.inherent_risk_assembler import InherentRiskAssembler
 from app.config import DATABASE_SCHEMA_TOKEN, PercentageInherentRiskScoringPolicy
+from app.models.dto import ComputedQuestionRisk, TopRiskDriverState
 from app.models.database import QuestionAnalysisRun, QuestionRiskResult
 from app.models.enums import AnalysisRunStatus, ExecutiveSummaryStatus, RiskLevel
 from app.repositories.analysis_repository import AnalysisRepository
@@ -37,6 +38,27 @@ def seed_boundary_question(db_session, seeded_assessment, selected_weight: float
             ("Selected", selected_level, selected_weight, "Boundary risk signal."),
             ("Maximum", RiskLevel.CRITICAL, 4.0, "Maximum risk signal."),
         ],
+    )
+
+
+def build_question_result(risk_domain: str, risk_level: RiskLevel, risk_weight: float) -> ComputedQuestionRisk:
+    token = uuid.uuid4()
+    return ComputedQuestionRisk(
+        question_code=f"Q-{risk_domain}-{risk_level.value}-{risk_weight}",
+        response_id=token,
+        question_definition_id=token,
+        selected_option_id=token,
+        selected_option_label="Selected",
+        question_text=f"Question for {risk_domain}",
+        risk_domain=risk_domain,
+        risk_level=risk_level,
+        risk_weight=risk_weight,
+        max_risk_weight=max(risk_weight, 4.0),
+        why_it_matters="Why it matters.",
+        risk_signal="Risk signal.",
+        explanation="Explanation.",
+        confidence=1.0,
+        input_snapshot={},
     )
 
 
@@ -190,13 +212,96 @@ async def test_high_risk_question_count_counts_high_and_critical_only(db_session
     assert dto.inherentRisk.highRiskQuestionCount == 2
 
 
-async def test_top_risk_drivers_are_limited_and_deterministic(db_session, seeded_assessment):
+async def test_derive_top_risk_drivers_returns_empty_when_no_high_or_critical_results():
+    service = build_service()
+
+    drivers = service.derive_top_risk_drivers(
+        [
+            build_question_result("domain-low", RiskLevel.LOW, 1.0),
+            build_question_result("domain-medium", RiskLevel.MEDIUM, 2.0),
+        ]
+    )
+
+    assert drivers == []
+
+
+async def test_derive_top_risk_drivers_returns_one_driver_for_one_eligible_domain():
+    service = build_service()
+
+    drivers = service.derive_top_risk_drivers(
+        [build_question_result("domain-eligible", RiskLevel.HIGH, 3.0)]
+    )
+
+    assert [(driver.domain, driver.level) for driver in drivers] == [
+        ("domain-eligible", RiskLevel.HIGH),
+    ]
+
+
+async def test_derive_top_risk_drivers_uses_all_eligible_domains_with_deterministic_ordering():
+    service = build_service()
+
+    drivers = service.derive_top_risk_drivers(
+        [
+            build_question_result("domain-gamma", RiskLevel.HIGH, 3.4),
+            build_question_result("domain-alpha", RiskLevel.HIGH, 3.8),
+            build_question_result("domain-alpha", RiskLevel.CRITICAL, 4.5),
+            build_question_result("domain-delta", RiskLevel.CRITICAL, 3.2),
+            build_question_result("domain-beta", RiskLevel.HIGH, 3.4),
+            build_question_result("domain-epsilon", RiskLevel.HIGH, 3.7),
+            build_question_result("domain-epsilon", RiskLevel.HIGH, 3.9),
+            build_question_result("domain-low", RiskLevel.LOW, 4.0),
+            build_question_result("domain-medium", RiskLevel.MEDIUM, 2.0),
+        ]
+    )
+
+    assert [(driver.domain, driver.level) for driver in drivers] == [
+        ("domain-alpha", RiskLevel.CRITICAL),
+        ("domain-delta", RiskLevel.CRITICAL),
+        ("domain-epsilon", RiskLevel.HIGH),
+        ("domain-beta", RiskLevel.HIGH),
+        ("domain-gamma", RiskLevel.HIGH),
+    ]
+
+
+async def test_get_inherent_risk_screen_uses_public_top_risk_driver_deriver(
+    db_session,
+    seeded_assessment,
+    monkeypatch,
+):
+    question, option = await add_question_with_option(
+        db_session,
+        seeded_assessment["questionnaire_version_id"],
+        risk_domain="domain-source",
+        risk_level=RiskLevel.HIGH,
+        risk_weight=3.0,
+    )
+    await add_response(db_session, seeded_assessment["assessment_id"], question, option)
+    service = build_service()
+    captured: dict[str, object] = {}
+
+    def fake_derive_top_risk_drivers(question_results):
+        captured["question_results"] = question_results
+        return [TopRiskDriverState(domain="domain-from-public-method", level=RiskLevel.CRITICAL)]
+
+    monkeypatch.setattr(service, "derive_top_risk_drivers", fake_derive_top_risk_drivers)
+
+    dto = await service.get_inherent_risk_screen(db_session, seeded_assessment["assessment_id"])
+
+    assert len(captured["question_results"]) == 1
+    assert [driver.model_dump() for driver in dto.topRiskDrivers] == [
+        {"domain": "domain-from-public-method", "level": RiskLevel.CRITICAL},
+    ]
+
+
+async def test_get_inherent_risk_screen_exposes_complete_top_risk_driver_list(db_session, seeded_assessment):
     items = [
-        ("Operations", RiskLevel.HIGH, 3.0),
-        ("Business Continuity", RiskLevel.CRITICAL, 4.0),
-        ("Security", RiskLevel.HIGH, 3.5),
-        ("Privacy", RiskLevel.MEDIUM, 2.0),
-        ("Vendor Reputation", RiskLevel.CRITICAL, 4.0),
+        ("domain-gamma", RiskLevel.HIGH, 3.4),
+        ("domain-alpha", RiskLevel.CRITICAL, 4.5),
+        ("domain-delta", RiskLevel.CRITICAL, 3.2),
+        ("domain-beta", RiskLevel.HIGH, 3.4),
+        ("domain-epsilon", RiskLevel.HIGH, 3.9),
+        ("domain-low", RiskLevel.LOW, 1.0),
+        ("domain-medium", RiskLevel.MEDIUM, 2.0),
     ]
     for domain, level, weight in items:
         question, option = await add_question_with_option(
@@ -212,9 +317,11 @@ async def test_top_risk_drivers_are_limited_and_deterministic(db_session, seeded
     dto = await service.get_inherent_risk_screen(db_session, seeded_assessment["assessment_id"])
 
     assert [driver.model_dump() for driver in dto.topRiskDrivers] == [
-        {"domain": "Business Continuity", "level": RiskLevel.CRITICAL},
-        {"domain": "Vendor Reputation", "level": RiskLevel.CRITICAL},
-        {"domain": "Security", "level": RiskLevel.HIGH},
+        {"domain": "domain-alpha", "level": RiskLevel.CRITICAL},
+        {"domain": "domain-delta", "level": RiskLevel.CRITICAL},
+        {"domain": "domain-epsilon", "level": RiskLevel.HIGH},
+        {"domain": "domain-beta", "level": RiskLevel.HIGH},
+        {"domain": "domain-gamma", "level": RiskLevel.HIGH},
     ]
 
 

@@ -126,32 +126,19 @@ class ExecutiveSummaryService:
             )
 
     def _build_input_payload(self, assessment, snapshot: StoredAnalysisSnapshot) -> dict[str, object]:
-        high_risk_results = [
-            result
-            for result in snapshot.question_results
-            if result.risk_level in {RiskLevel.HIGH, RiskLevel.CRITICAL}
-        ]
-        top_risk_drivers = [
-            {"domain": driver["domain"], "level": driver["level"]}
-            for driver in self._derive_top_risk_drivers(snapshot)
-        ]
-        material_questions = high_risk_results or self._top_material_questions(snapshot)
-
         return {
             "technologyName": assessment.technology_name,
             "vendorName": getattr(assessment, "vendor_name", None),
             "productName": getattr(assessment, "product_name", None),
-            "inherentRiskLevel": snapshot.inherent_risk_level.value,
-            "highRiskQuestionCount": len(high_risk_results),
-            "topRiskDrivers": top_risk_drivers,
-            "materialQuestions": [
+            "overallRisk": snapshot.inherent_risk_level.value,
+            "topRiskDrivers": [
                 {
-                    "questionText": result.question_text,
-                    "selectedResponse": result.selected_option_label,
-                    "whyItMatters": result.why_it_matters,
-                    "riskSignal": result.risk_signal,
+                    "domain": driver.domain,
+                    "level": driver.level.value,
                 }
-                for result in material_questions
+                for driver in self.inherent_risk_service.derive_top_risk_drivers(
+                    snapshot.question_results
+                )
             ],
             "materialLimitations": self._derive_material_limitations(snapshot),
         }
@@ -167,9 +154,11 @@ class ExecutiveSummaryService:
             or getattr(assessment, "technology_name", None)
             or "the assessed solution"
         )
-        top_risk_drivers = self._derive_top_risk_drivers(snapshot)
+        top_risk_drivers = self.inherent_risk_service.derive_top_risk_drivers(
+            snapshot.question_results
+        )
         if top_risk_drivers:
-            drivers_text = ", ".join(driver["domain"] for driver in top_risk_drivers)
+            drivers_text = ", ".join(driver.domain for driver in top_risk_drivers)
             driver_sentence = f" The top risk drivers are {drivers_text}."
         else:
             driver_sentence = ""
@@ -197,32 +186,6 @@ class ExecutiveSummaryService:
         if not snapshot.question_results:
             return "No answered triage responses were available for scoring."
         return "Scoring completed with limitations based on available triage responses."
-
-    def _derive_top_risk_drivers(self, snapshot: StoredAnalysisSnapshot) -> list[dict[str, str]]:
-        grouped: dict[str, list] = {}
-        for result in snapshot.question_results:
-            if result.risk_level not in {RiskLevel.HIGH, RiskLevel.CRITICAL}:
-                continue
-            grouped.setdefault(result.risk_domain, []).append(result)
-
-        ranked: list[tuple[int, float, str, RiskLevel]] = []
-        for domain, results in grouped.items():
-            highest_level = max((result.risk_level for result in results), key=lambda level: level.rank)
-            highest_weight = max(result.risk_weight for result in results)
-            ranked.append((highest_level.rank, highest_weight, domain, highest_level))
-
-        ranked.sort(key=lambda item: (-item[0], -item[1], item[2]))
-        return [
-            {"domain": domain, "level": level.value}
-            for _, _, domain, level in ranked[:3]
-        ]
-
-    @staticmethod
-    def _top_material_questions(snapshot: StoredAnalysisSnapshot):
-        return sorted(
-            snapshot.question_results,
-            key=lambda result: (-result.risk_level.rank, -result.risk_weight, result.question_text),
-        )[:3]
 
     @staticmethod
     def _build_response(
