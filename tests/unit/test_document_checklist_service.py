@@ -14,9 +14,11 @@ from app.repositories.vendor_certification_repository import (
     vendor_reputation_hitl_reviews,
     vendor_reputation_jobs,
 )
+from app.domain.errors import DocumentChecklistRunNotFoundError
 from app.services.document_checklist_service import (
-    DocumentChecklistRunNotFoundError,
-    DocumentChecklistService,
+    DocumentChecklistExecutionService,
+    DocumentChecklistQueryService,
+    DocumentChecklistReviewService,
 )
 
 pytestmark = pytest.mark.asyncio
@@ -51,7 +53,7 @@ async def test_generate_checklist_detects_uploaded_and_missing_documents(db_sess
     )
     await db_session.commit()
 
-    result = await DocumentChecklistService().generate_checklist_run(db_session, seeded_assessment["assessment_id"])
+    result = await DocumentChecklistExecutionService().generate_checklist_run(db_session, seeded_assessment["assessment_id"])
 
     assert [state.item.document_type for state in result.items] == [
         DocumentType.SOC2_TYPE_II.value,
@@ -82,7 +84,7 @@ async def test_generate_checklist_uses_manual_classification_override(db_session
     review.created_at = BASE_TIME + timedelta(minutes=1)
     await db_session.commit()
 
-    result = await DocumentChecklistService().generate_checklist_run(db_session, seeded_assessment["assessment_id"])
+    result = await DocumentChecklistExecutionService().generate_checklist_run(db_session, seeded_assessment["assessment_id"])
 
     architecture = _state_by_type(result)[DocumentType.ARCHITECTURE_DIAGRAM.value]
     assert architecture.detected_file is True
@@ -100,7 +102,7 @@ async def test_generate_checklist_ignores_soft_deleted_documents(db_session, see
     )
     await db_session.commit()
 
-    result = await DocumentChecklistService().generate_checklist_run(db_session, seeded_assessment["assessment_id"])
+    result = await DocumentChecklistExecutionService().generate_checklist_run(db_session, seeded_assessment["assessment_id"])
 
     soc2 = _state_by_type(result)[DocumentType.SOC2_TYPE_II.value]
     assert soc2.detected_file is False
@@ -116,7 +118,7 @@ async def test_vendor_reputation_available_keeps_file_missing_but_influences_ver
     )
     await db_session.commit()
 
-    result = await DocumentChecklistService().generate_checklist_run(db_session, seeded_assessment["assessment_id"])
+    result = await DocumentChecklistExecutionService().generate_checklist_run(db_session, seeded_assessment["assessment_id"])
 
     soc2 = _state_by_type(result)[DocumentType.SOC2_TYPE_II.value]
     assert soc2.detected_file is False
@@ -141,7 +143,7 @@ async def test_analyst_certification_status_overrides_automatic_status(db_sessio
     )
     await db_session.commit()
 
-    result = await DocumentChecklistService().generate_checklist_run(db_session, seeded_assessment["assessment_id"])
+    result = await DocumentChecklistExecutionService().generate_checklist_run(db_session, seeded_assessment["assessment_id"])
 
     soc2_snapshot = _snapshot_item(result.run, DocumentType.SOC2_TYPE_II)["certification"]
     iso_snapshot = _snapshot_item(result.run, DocumentType.ISO_27001)["certification"]
@@ -172,7 +174,7 @@ async def test_checklist_reviewer_override_changes_effective_verdict_not_base_or
     )
     await db_session.commit()
 
-    result = await DocumentChecklistService().generate_checklist_run(db_session, seeded_assessment["assessment_id"])
+    result = await DocumentChecklistExecutionService().generate_checklist_run(db_session, seeded_assessment["assessment_id"])
 
     architecture = _state_by_type(result)[DocumentType.ARCHITECTURE_DIAGRAM.value]
     assert architecture.detected_file is False
@@ -191,7 +193,7 @@ async def test_null_reviewer_override_falls_back_to_base_verdict(db_session, see
     )
     await db_session.commit()
 
-    result = await DocumentChecklistService().generate_checklist_run(db_session, seeded_assessment["assessment_id"])
+    result = await DocumentChecklistExecutionService().generate_checklist_run(db_session, seeded_assessment["assessment_id"])
 
     soc2 = _state_by_type(result)[DocumentType.SOC2_TYPE_II.value]
     assert soc2.base_verdict == ChecklistVerdict.REQUIRED.value
@@ -217,7 +219,7 @@ async def test_latest_reviewer_override_wins(db_session, seeded_assessment):
     latest.created_at = BASE_TIME + timedelta(minutes=1)
     await db_session.commit()
 
-    result = await DocumentChecklistService().generate_checklist_run(db_session, seeded_assessment["assessment_id"])
+    result = await DocumentChecklistExecutionService().generate_checklist_run(db_session, seeded_assessment["assessment_id"])
 
     iso = _state_by_type(result)[DocumentType.ISO_27001.value]
     assert iso.reviewer_verdict == ChecklistVerdict.NOT_APPLICABLE.value
@@ -226,7 +228,7 @@ async def test_latest_reviewer_override_wins(db_session, seeded_assessment):
 
 
 async def test_generation_creates_new_run_per_invocation_with_exactly_three_items(db_session, seeded_assessment):
-    service = DocumentChecklistService()
+    service = DocumentChecklistExecutionService()
 
     first = await service.generate_checklist_run(db_session, seeded_assessment["assessment_id"])
     second = await service.generate_checklist_run(db_session, seeded_assessment["assessment_id"])
@@ -249,7 +251,7 @@ async def test_generation_flushes_without_committing(db_session, seeded_assessme
 
     monkeypatch.setattr(db_session, "commit", commit_spy)
 
-    result = await DocumentChecklistService().generate_checklist_run(db_session, seeded_assessment["assessment_id"])
+    result = await DocumentChecklistExecutionService().generate_checklist_run(db_session, seeded_assessment["assessment_id"])
 
     assert commit_calls == 0
     assert result.run.id is not None
@@ -260,7 +262,7 @@ async def test_generation_flushes_without_committing(db_session, seeded_assessme
 async def test_generation_calls_llm_once_and_stores_summary(db_session, seeded_assessment):
     fake_client = FakeSummaryClient(summary="Checklist summary.")
 
-    result = await DocumentChecklistService(llm_client=fake_client).generate_checklist_run(
+    result = await DocumentChecklistExecutionService(llm_client=fake_client).generate_checklist_run(
         db_session,
         seeded_assessment["assessment_id"],
     )
@@ -282,7 +284,7 @@ async def test_generation_calls_llm_once_and_stores_summary(db_session, seeded_a
 async def test_generation_preserves_run_and_items_when_llm_fails(db_session, seeded_assessment):
     fake_client = FakeSummaryClient(error=RuntimeError("LLM unavailable."))
 
-    result = await DocumentChecklistService(llm_client=fake_client).generate_checklist_run(
+    result = await DocumentChecklistExecutionService(llm_client=fake_client).generate_checklist_run(
         db_session,
         seeded_assessment["assessment_id"],
     )
@@ -324,7 +326,7 @@ async def test_review_repository_flushes_without_committing(db_session, seeded_a
 
 
 async def test_review_service_flushes_without_committing(db_session, seeded_assessment, monkeypatch):
-    run = await DocumentChecklistService().generate_checklist_run(db_session, seeded_assessment["assessment_id"])
+    run = await DocumentChecklistExecutionService().generate_checklist_run(db_session, seeded_assessment["assessment_id"])
     item = run.items[0].item
     commit_calls = 0
 
@@ -335,7 +337,7 @@ async def test_review_service_flushes_without_committing(db_session, seeded_asse
 
     monkeypatch.setattr(db_session, "commit", commit_spy)
 
-    result = await DocumentChecklistService().append_item_review(
+    result = await DocumentChecklistReviewService().append_item_review(
         db_session,
         assessment_id=seeded_assessment["assessment_id"],
         item_id=item.id,
@@ -352,7 +354,7 @@ async def test_application_service_generate_and_finalize_directly_without_fastap
     db_session,
     seeded_assessment,
 ):
-    service = DocumentChecklistService(llm_client=FakeSummaryClient(summary="Checklist summary."))
+    service = DocumentChecklistExecutionService(llm_client=FakeSummaryClient(summary="Checklist summary."))
 
     generated = await service.generate_checklist(db_session, seeded_assessment["assessment_id"])
     state = await service.finalize_checklist(
@@ -374,7 +376,7 @@ async def test_application_service_get_checklist_raises_not_found_directly_witho
     db_session,
     seeded_assessment,
 ):
-    service = DocumentChecklistService()
+    service = DocumentChecklistQueryService()
 
     with pytest.raises(DocumentChecklistRunNotFoundError):
         await service.get_checklist(db_session, seeded_assessment["assessment_id"])
@@ -384,18 +386,20 @@ async def test_application_service_apply_reviewer_override_directly_without_fast
     db_session,
     seeded_assessment,
 ):
-    service = DocumentChecklistService()
-    generated = await service.generate_checklist(db_session, seeded_assessment["assessment_id"])
+    execution_service = DocumentChecklistExecutionService()
+    review_service = DocumentChecklistReviewService()
+    query_service = DocumentChecklistQueryService()
+    generated = await execution_service.generate_checklist(db_session, seeded_assessment["assessment_id"])
     item_id = generated.items[0].item.id
 
-    reviewed = await service.apply_reviewer_override(
+    reviewed = await review_service.apply_reviewer_override(
         db_session,
         assessment_id=seeded_assessment["assessment_id"],
         item_id=item_id,
         reviewer_verdict=ChecklistVerdict.RECOMMENDED,
         reason="Reviewer accepted certification.",
     )
-    latest = await service.get_checklist(db_session, seeded_assessment["assessment_id"])
+    latest = await query_service.get_checklist(db_session, seeded_assessment["assessment_id"])
 
     assert reviewed.item.id == item_id
     assert reviewed.effective_verdict == ChecklistVerdict.RECOMMENDED.value

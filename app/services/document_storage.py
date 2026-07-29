@@ -9,7 +9,7 @@ from uuid import UUID
 from app.config import Settings, get_settings
 
 try:
-    from azure.core.exceptions import ResourceExistsError
+    from azure.core.exceptions import ResourceExistsError, ResourceNotFoundError
     from azure.storage.blob import ContentSettings
     from azure.storage.blob.aio import BlobServiceClient
 except ImportError:  # pragma: no cover - exercised through mocked globals in unit tests.
@@ -19,11 +19,20 @@ except ImportError:  # pragma: no cover - exercised through mocked globals in un
     class ResourceExistsError(Exception):
         pass
 
+    class ResourceNotFoundError(Exception):
+        pass
+
 
 @dataclass(frozen=True)
 class StoredDocument:
     container: str
     key: str
+
+
+@dataclass(frozen=True)
+class OpenedDocument:
+    content: bytes
+    content_type: str
 
 
 class AzureBlobDocumentStorageConfigurationError(RuntimeError):
@@ -75,6 +84,14 @@ class DocumentStorage(Protocol):
     ) -> None:
         ...
 
+    async def open(
+        self,
+        *,
+        container: str,
+        key: str,
+    ) -> OpenedDocument:
+        ...
+
 
 def make_safe_document_filename(filename: str) -> str:
     safe_filename = re.sub(r"[^A-Za-z0-9._-]+", "_", filename.strip()).strip("._")
@@ -95,7 +112,7 @@ def build_document_storage_key(
 class InMemoryDocumentStorage:
     def __init__(self, *, container: str = "sar-documents") -> None:
         self.container = container
-        self.objects: dict[tuple[str, str], bytes] = {}
+        self.objects: dict[tuple[str, str], OpenedDocument] = {}
 
     async def store(
         self,
@@ -106,7 +123,6 @@ class InMemoryDocumentStorage:
         content_type: str,
         content: bytes,
     ) -> StoredDocument:
-        del content_type
         key = build_document_storage_key(
             assessment_id=assessment_id,
             document_id=document_id,
@@ -115,7 +131,7 @@ class InMemoryDocumentStorage:
         object_ref = (self.container, key)
         if object_ref in self.objects:
             raise FileExistsError(f"Document object already exists for key {key}.")
-        self.objects[object_ref] = content
+        self.objects[object_ref] = OpenedDocument(content=content, content_type=content_type)
         return StoredDocument(container=self.container, key=key)
 
     async def delete(
@@ -125,6 +141,17 @@ class InMemoryDocumentStorage:
         key: str,
     ) -> None:
         self.objects.pop((container, key), None)
+
+    async def open(
+        self,
+        *,
+        container: str,
+        key: str,
+    ) -> OpenedDocument:
+        document = self.objects.get((container, key))
+        if document is None:
+            raise FileNotFoundError(f"Document object was not found for key {key}.")
+        return document
 
 
 class AzureBlobDocumentStorage:
@@ -186,6 +213,34 @@ class AzureBlobDocumentStorage:
                 await _close_client(blob_client)
         finally:
             await _close_client(service_client)
+
+    async def open(
+        self,
+        *,
+        container: str,
+        key: str,
+    ) -> OpenedDocument:
+        service_client = self._create_service_client()
+        try:
+            blob_client = service_client.get_blob_client(container=container, blob=key)
+            try:
+                try:
+                    downloader = await _maybe_await(blob_client.download_blob())
+                    content = await _maybe_await(downloader.readall())
+                    properties = await _maybe_await(blob_client.get_blob_properties())
+                except ResourceNotFoundError as exc:
+                    raise FileNotFoundError(f"Document object was not found for key {key}.") from exc
+            finally:
+                await _close_client(blob_client)
+        finally:
+            await _close_client(service_client)
+
+        content_settings = getattr(properties, "content_settings", None)
+        stored_content_type = getattr(content_settings, "content_type", None) if content_settings is not None else None
+        return OpenedDocument(
+            content=content,
+            content_type=stored_content_type or "application/octet-stream",
+        )
 
     def _create_service_client(self):
         if BlobServiceClient is None:

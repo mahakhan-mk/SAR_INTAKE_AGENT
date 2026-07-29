@@ -3,8 +3,13 @@ from uuid import UUID
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.dependencies import get_executive_summary_service, get_inherent_risk_service, get_session
-from app.models.dto import (
+from app.api.dependencies import (
+    get_executive_summary_service,
+    get_inherent_risk_execution_service,
+    get_inherent_risk_query_service,
+    get_session,
+)
+from app.api.schemas import (
     AnalysisRunCreateRequestDTO,
     AnalysisRunCreateResponseDTO,
     ExecutiveSummaryGenerateRequestDTO,
@@ -12,7 +17,7 @@ from app.models.dto import (
     InherentRiskResponseDTO,
 )
 from app.services.executive_summary_service import ExecutiveSummaryService
-from app.services.inherent_risk_service import InherentRiskService
+from app.services.inherent_risk_service import InherentRiskExecutionService, InherentRiskQueryService
 
 router = APIRouter(prefix="/api/v1/assessments", tags=["inherent-risk"])
 
@@ -21,9 +26,10 @@ router = APIRouter(prefix="/api/v1/assessments", tags=["inherent-risk"])
 async def get_inherent_risk(
     assessment_id: UUID,
     session: AsyncSession = Depends(get_session),
-    service: InherentRiskService = Depends(get_inherent_risk_service),
+    service: InherentRiskQueryService = Depends(get_inherent_risk_query_service),
 ) -> InherentRiskResponseDTO:
-    return await service.get_inherent_risk_screen(session=session, assessment_id=assessment_id)
+    result = await service.get_inherent_risk_screen(session=session, assessment_id=assessment_id)
+    return InherentRiskResponseDTO.model_validate(result)
 
 
 @router.post("/{assessment_id}/analysis-runs", response_model=AnalysisRunCreateResponseDTO)
@@ -31,7 +37,8 @@ async def create_analysis_run(
     assessment_id: UUID,
     payload: AnalysisRunCreateRequestDTO,
     session: AsyncSession = Depends(get_session),
-    service: InherentRiskService = Depends(get_inherent_risk_service),
+    # Temporary synchronous worker-execution compatibility dependency.
+    service: InherentRiskExecutionService = Depends(get_inherent_risk_execution_service),
 ) -> AnalysisRunCreateResponseDTO:
     try:
         response = await service.create_analysis_run(
@@ -40,7 +47,7 @@ async def create_analysis_run(
             force=payload.force,
         )
         await session.commit()
-        return response
+        return AnalysisRunCreateResponseDTO.model_validate(response)
     except Exception:
         await session.rollback()
         raise
@@ -52,6 +59,7 @@ async def generate_executive_summary(
     analysis_run_id: UUID,
     payload: ExecutiveSummaryGenerateRequestDTO,
     session: AsyncSession = Depends(get_session),
+    # Temporary synchronous worker-execution compatibility dependency.
     service: ExecutiveSummaryService = Depends(get_executive_summary_service),
 ) -> ExecutiveSummaryGenerateResponseDTO:
     try:
@@ -62,7 +70,7 @@ async def generate_executive_summary(
             force=payload.force,
         )
         await session.commit()
-        return response
+        return ExecutiveSummaryGenerateResponseDTO.model_validate(response)
     except Exception:
         await session.rollback()
         raise

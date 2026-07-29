@@ -4,35 +4,23 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
-from pydantic import ConfigDict
-
+from app.application.models import (
+    ReportPreviewArchitecture,
+    ReportPreviewAssessment,
+    ReportPreviewBusinessContactDetails,
+    ReportPreviewBusinessContinuity,
+    ReportPreviewDataFlow,
+    ReportPreviewDataHosted,
+    ReportPreviewDocumentChecklist,
+    ReportPreviewHosting,
+    ReportPreviewResult,
+    ReportPreviewRiskAssessment,
+    ReportPreviewSolutionOverview,
+    ReportPreviewThirdPartyMeasures,
+)
 from app.models.report_preview import (
     REPORT_PREVIEW_QUESTION_CODE_TO_FIELD_NAME,
-    ReportPreviewArchitectureDTO,
-    ReportPreviewAssessmentDTO,
-    ReportPreviewBusinessContactDetailsDTO,
-    ReportPreviewBusinessContinuityDTO,
-    ReportPreviewDataFlowDTO,
-    ReportPreviewDataHostedDTO,
-    ReportPreviewDocumentChecklistDTO,
-    ReportPreviewHostingDTO,
-    ReportPreviewResponseDTO,
-    ReportPreviewRiskAssessmentDTO,
-    ReportPreviewSolutionOverviewDTO,
-    ReportPreviewThirdPartyMeasuresDTO,
 )
-
-
-class _ExtendedRiskAssessmentDTO(ReportPreviewRiskAssessmentDTO):
-    model_config = ConfigDict(extra="allow")
-
-
-class _ExtendedArchitectureDTO(ReportPreviewArchitectureDTO):
-    model_config = ConfigDict(extra="allow")
-
-
-class _ExtendedDocumentChecklistDTO(ReportPreviewDocumentChecklistDTO):
-    model_config = ConfigDict(extra="allow")
 
 
 class ReportPreviewAssembler:
@@ -47,23 +35,15 @@ class ReportPreviewAssembler:
         generated_at: datetime | None = None,
         questionnaire_version: str | None = None,
         source_system: str | None = None,
-    ) -> ReportPreviewResponseDTO:
-        business_contact_details = ReportPreviewBusinessContactDetailsDTO()
-        solution_overview = ReportPreviewSolutionOverviewDTO()
-        hosting = ReportPreviewHostingDTO()
-        data_hosted = ReportPreviewDataHostedDTO()
-        data_flow = ReportPreviewDataFlowDTO()
-        business_continuity = ReportPreviewBusinessContinuityDTO()
-        third_party_measures = ReportPreviewThirdPartyMeasuresDTO()
-
-        section_dtos: dict[str, object] = {
-            "businessContactDetails": business_contact_details,
-            "solutionOverview": solution_overview,
-            "hosting": hosting,
-            "dataHosted": data_hosted,
-            "dataFlow": data_flow,
-            "businessContinuity": business_continuity,
-            "thirdPartyMeasures": third_party_measures,
+    ) -> ReportPreviewResult:
+        section_values: dict[str, dict[str, object]] = {
+            "businessContactDetails": {},
+            "solutionOverview": {},
+            "hosting": {},
+            "dataHosted": {},
+            "dataFlow": {},
+            "businessContinuity": {},
+            "thirdPartyMeasures": {},
         }
 
         for record in response_records or []:
@@ -79,30 +59,30 @@ class ReportPreviewAssembler:
                 continue
 
             section_name, field_name = mapping_target.split(".", 1)
-            setattr(section_dtos[section_name], field_name, answer_value)
+            section_values[section_name][field_name] = answer_value
 
         risk_assessment = self._build_risk_assessment(analysis_snapshot)
         architecture = self._build_architecture(architecture_document)
         document_checklist = self._build_document_checklist(checklist_state)
 
-        return ReportPreviewResponseDTO.model_construct(
+        return ReportPreviewResult(
             assessmentId=self._coerce_uuid(self._read_attr(assessment, "id", "assessment_id", "assessmentId")),
             generatedAt=generated_at or datetime.now(timezone.utc),
-            assessment=ReportPreviewAssessmentDTO(
+            assessment=ReportPreviewAssessment(
                 technologyName=self._read_attr(assessment, "technology_name", "technologyName"),
                 sourceSystem=source_system or self._read_attr(assessment, "source_system", "sourceSystem"),
                 questionnaireVersion=questionnaire_version
                 or self._read_attr(assessment, "questionnaire_version", "questionnaireVersion"),
             ),
             riskAssessment=risk_assessment,
-            businessContactDetails=business_contact_details,
-            solutionOverview=solution_overview,
+            businessContactDetails=ReportPreviewBusinessContactDetails(**section_values["businessContactDetails"]),
+            solutionOverview=ReportPreviewSolutionOverview(**section_values["solutionOverview"]),
             architecture=architecture,
-            hosting=hosting,
-            dataHosted=data_hosted,
-            dataFlow=data_flow,
-            businessContinuity=business_continuity,
-            thirdPartyMeasures=third_party_measures,
+            hosting=ReportPreviewHosting(**section_values["hosting"]),
+            dataHosted=ReportPreviewDataHosted(**section_values["dataHosted"]),
+            dataFlow=ReportPreviewDataFlow(**section_values["dataFlow"]),
+            businessContinuity=ReportPreviewBusinessContinuity(**section_values["businessContinuity"]),
+            thirdPartyMeasures=ReportPreviewThirdPartyMeasures(**section_values["thirdPartyMeasures"]),
             documentChecklist=document_checklist,
             vendorReputation=None,
             limitations=self._build_limitations(
@@ -112,9 +92,9 @@ class ReportPreviewAssembler:
             ),
         )
 
-    def _build_risk_assessment(self, analysis_snapshot: object | None) -> _ExtendedRiskAssessmentDTO:
+    def _build_risk_assessment(self, analysis_snapshot: object | None) -> ReportPreviewRiskAssessment:
         if analysis_snapshot is None:
-            return _ExtendedRiskAssessmentDTO(
+            return ReportPreviewRiskAssessment(
                 inherentRiskLevel=None,
                 executiveSummary=None,
                 status=None,
@@ -122,7 +102,7 @@ class ReportPreviewAssembler:
             )
 
         top_risk_drivers = self._derive_top_risk_drivers(analysis_snapshot)
-        return _ExtendedRiskAssessmentDTO(
+        return ReportPreviewRiskAssessment(
             inherentRiskLevel=self._enum_value(
                 self._read_attr(analysis_snapshot, "inherent_risk_level", "inherentRiskLevel"),
             ),
@@ -136,8 +116,8 @@ class ReportPreviewAssembler:
             topRiskDrivers=top_risk_drivers,
         )
 
-    def _build_architecture(self, architecture_document: object | None) -> _ExtendedArchitectureDTO:
-        return _ExtendedArchitectureDTO(
+    def _build_architecture(self, architecture_document: object | None) -> ReportPreviewArchitecture:
+        return ReportPreviewArchitecture(
             architectureDetails=None,
             documentId=(
                 str(self._read_attr(architecture_document, "id", "document_id", "documentId"))
@@ -156,9 +136,9 @@ class ReportPreviewAssembler:
             ),
         )
 
-    def _build_document_checklist(self, checklist_state: object | None) -> _ExtendedDocumentChecklistDTO:
+    def _build_document_checklist(self, checklist_state: object | None) -> ReportPreviewDocumentChecklist:
         if checklist_state is None:
-            return _ExtendedDocumentChecklistDTO(
+            return ReportPreviewDocumentChecklist(
                 summary=None,
                 status=None,
                 items=[],
@@ -167,7 +147,7 @@ class ReportPreviewAssembler:
 
         run = self._read_attr(checklist_state, "run")
         items = [self._build_checklist_item(item_state) for item_state in self._read_attr(checklist_state, "items") or []]
-        return _ExtendedDocumentChecklistDTO(
+        return ReportPreviewDocumentChecklist(
             summary=self._read_attr(run, "summary_text", "summary", "summaryText"),
             status=self._read_attr(run, "status"),
             items=items,

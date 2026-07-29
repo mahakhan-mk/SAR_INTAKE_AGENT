@@ -6,7 +6,7 @@ from uuid import UUID
 import pytest
 from pydantic import ValidationError
 
-from app.models.dto import (
+from app.api.schemas import (
     AIAnalysisQuestionRowDTO,
     AIAnalysisResponseDTO,
     AIAnalysisRunSummaryDTO,
@@ -111,8 +111,6 @@ def test_ai_analysis_response_dto_serializes_expected_shape():
                 riskScore=3.0,
                 riskSignal="High signal",
                 whyItMatters="Sensitive data increases potential impact.",
-                aiExplanation="The selected answer indicates elevated exposure.",
-                confidence=1.0,
                 reviewerRemarks="Reviewed by analyst",
             )
         ],
@@ -137,8 +135,6 @@ def test_ai_analysis_response_dto_serializes_expected_shape():
                 "riskScore": 3.0,
                 "riskSignal": "High signal",
                 "whyItMatters": "Sensitive data increases potential impact.",
-                "aiExplanation": "The selected answer indicates elevated exposure.",
-                "confidence": 1.0,
                 "reviewerRemarks": "Reviewed by analyst",
             }
         ],
@@ -157,15 +153,12 @@ def test_ai_analysis_question_row_dto_allows_nullable_analysis_fields():
         riskScore=None,
         riskSignal=None,
         whyItMatters=None,
-        aiExplanation=None,
-        confidence=None,
         reviewerRemarks=None,
     )
 
     assert dto.questionId == UUID("00000000-0000-0000-0000-000000000005")
     assert dto.riskBand is None
     assert dto.riskScore is None
-    assert dto.aiExplanation is None
     assert dto.reviewerRemarks is None
 
 

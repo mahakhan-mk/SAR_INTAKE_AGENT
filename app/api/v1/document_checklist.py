@@ -5,28 +5,27 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.dependencies import get_session
-from app.assemblers.document_checklist_assembler import DocumentChecklistAssembler
-from app.models.document_checklist import (
+from app.api.dependencies import (
+    get_document_checklist_assembler,
+    get_document_checklist_execution_service,
+    get_document_checklist_query_service,
+    get_document_checklist_review_service,
+    get_session,
+)
+from app.api.schemas import (
     DocumentChecklistItemResponseDTO,
     DocumentChecklistItemReviewRequestDTO,
     DocumentChecklistResponseDTO,
 )
+from app.assemblers.document_checklist_assembler import DocumentChecklistAssembler
+from app.domain.errors import DocumentChecklistItemNotFoundError, DocumentChecklistRunNotFoundError
 from app.services.document_checklist_service import (
-    DocumentChecklistItemNotFoundError,
-    DocumentChecklistRunNotFoundError,
-    DocumentChecklistService,
+    DocumentChecklistExecutionService,
+    DocumentChecklistQueryService,
+    DocumentChecklistReviewService,
 )
 
 router = APIRouter(prefix="/api/v1/assessments", tags=["document-checklist"])
-
-
-def get_document_checklist_service() -> DocumentChecklistService:
-    return DocumentChecklistService()
-
-
-def get_document_checklist_assembler() -> DocumentChecklistAssembler:
-    return DocumentChecklistAssembler()
 
 
 @router.post(
@@ -36,7 +35,8 @@ def get_document_checklist_assembler() -> DocumentChecklistAssembler:
 async def create_document_checklist_run(
     assessment_id: UUID,
     session: AsyncSession = Depends(get_session),
-    service: DocumentChecklistService = Depends(get_document_checklist_service),
+    # Temporary synchronous worker-execution compatibility dependency.
+    service: DocumentChecklistExecutionService = Depends(get_document_checklist_execution_service),
     assembler: DocumentChecklistAssembler = Depends(get_document_checklist_assembler),
 ) -> DocumentChecklistResponseDTO:
     try:
@@ -46,7 +46,7 @@ async def create_document_checklist_run(
             assessment_id=assessment_id,
             run_id=generated.run.id,
         )
-        response = assembler.to_dto(state)
+        response = DocumentChecklistResponseDTO.model_validate(assembler.to_dto(state))
         await session.commit()
         return response
     except DocumentChecklistRunNotFoundError as exc:
@@ -64,12 +64,12 @@ async def create_document_checklist_run(
 async def get_document_checklist(
     assessment_id: UUID,
     session: AsyncSession = Depends(get_session),
-    service: DocumentChecklistService = Depends(get_document_checklist_service),
+    service: DocumentChecklistQueryService = Depends(get_document_checklist_query_service),
     assembler: DocumentChecklistAssembler = Depends(get_document_checklist_assembler),
 ) -> DocumentChecklistResponseDTO:
     try:
         state = await service.get_checklist(session, assessment_id)
-        return assembler.to_dto(state)
+        return DocumentChecklistResponseDTO.model_validate(assembler.to_dto(state))
     except DocumentChecklistRunNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Document checklist run not found.") from exc
 
@@ -83,7 +83,7 @@ async def create_document_checklist_item_review(
     item_id: UUID,
     payload: DocumentChecklistItemReviewRequestDTO,
     session: AsyncSession = Depends(get_session),
-    service: DocumentChecklistService = Depends(get_document_checklist_service),
+    service: DocumentChecklistReviewService = Depends(get_document_checklist_review_service),
     assembler: DocumentChecklistAssembler = Depends(get_document_checklist_assembler),
 ) -> DocumentChecklistItemResponseDTO:
     try:
@@ -95,7 +95,7 @@ async def create_document_checklist_item_review(
             reason=payload.reason,
             reviewed_by=payload.reviewed_by,
         )
-        response = assembler.to_item_dto(state)
+        response = DocumentChecklistItemResponseDTO.model_validate(assembler.to_item_dto(state))
         await session.commit()
         return response
     except DocumentChecklistItemNotFoundError as exc:

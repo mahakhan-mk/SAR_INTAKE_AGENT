@@ -8,7 +8,7 @@ from sqlalchemy import func, select
 from app.config import Settings
 from app.models.database import AssessmentDocument
 from app.repositories.document_repository import DocumentRepository
-from app.services.document_service import DocumentService, DocumentUploadInput
+from app.services.document_service import DocumentCommandService, DocumentUploadInput
 from app.services.document_storage import (
     AzureBlobDocumentStorage,
     AzureBlobDocumentStorageSettings,
@@ -147,7 +147,7 @@ async def test_document_service_deletes_stored_blob_when_persistence_fails(
         raise RuntimeError("database flush failed")
 
     monkeypatch.setattr(repository, "create_assessment_document", fail_create)
-    service = DocumentService(document_repository=repository, storage=storage)
+    service = DocumentCommandService(document_repository=repository, storage=storage)
 
     with pytest.raises(RuntimeError, match="database flush failed"):
         await service.upload_document(

@@ -12,7 +12,7 @@ from app.api.dependencies import (
     get_initial_sar_report_storage,
     get_session,
 )
-from app.api.errors import AssessmentNotFoundError
+from app.domain.errors import AssessmentNotFoundError
 from app.main import app
 from app.services.initial_sar_report_generation_service import GeneratedInitialSarReportResult
 from app.services.initial_sar_report_storage import OpenedInitialSarReport

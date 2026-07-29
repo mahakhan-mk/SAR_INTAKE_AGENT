@@ -10,7 +10,7 @@ from app.api.dependencies import get_session
 from app.main import app
 from app.models.database import AssessmentDocument, DocumentChecklistItem, DocumentChecklistItemReview, SarAssessment
 from app.models.enums import ChecklistVerdict, DocumentType
-from app.services.document_checklist_service import DocumentChecklistService
+from app.services.document_checklist_service import DocumentChecklistExecutionService
 
 pytestmark = pytest.mark.asyncio
 
@@ -139,7 +139,10 @@ async def test_review_endpoint_preserves_base_verdict_and_detected_file_status(c
 
 async def test_review_endpoint_commits_once(session_factory, seeded_assessment):
     async with session_factory() as seed_session:
-        run = await DocumentChecklistService().generate_checklist_run(seed_session, seeded_assessment["assessment_id"])
+        run = await DocumentChecklistExecutionService().generate_checklist_run(
+            seed_session,
+            seeded_assessment["assessment_id"],
+        )
         item_id = run.items[0].item.id
         await seed_session.commit()
 

@@ -18,7 +18,7 @@ from app.repositories.vendor_certification_repository import (
     vendor_reputation_hitl_reviews,
     vendor_reputation_jobs,
 )
-from app.services.document_service import DocumentService, DocumentUploadInput
+from app.services.document_service import DocumentCommandService, DocumentUploadInput
 
 pytestmark = pytest.mark.asyncio
 
@@ -193,7 +193,7 @@ async def test_document_classification_service_flushes_without_committing(
 
     monkeypatch.setattr(db_session, "commit", commit_spy)
 
-    review = await DocumentService().append_classification_review(
+    review = await DocumentCommandService().append_classification_review(
         db_session,
         assessment_id=seeded_assessment["assessment_id"],
         document_id=document.id,
@@ -245,7 +245,7 @@ async def test_document_service_uploads_document_without_committing(db_session, 
 
     monkeypatch.setattr(db_session, "commit", commit_spy)
 
-    document = await DocumentService().upload_document(
+    document = await DocumentCommandService().upload_document(
         db_session,
         assessment_id=seeded_assessment["assessment_id"],
         upload=DocumentUploadInput(

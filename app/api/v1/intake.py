@@ -5,11 +5,12 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_intake_service, get_session
-from app.models.dto import (
+from app.api.schemas import (
     IntakeOverviewResponseDTO,
     IntakeQuestionUpdateRequestDTO,
     IntakeQuestionUpdateResponseDTO,
 )
+from app.application.models import IntakeQuestionUpdateCommand
 from app.services.intake_service import IntakeService
 
 router = APIRouter(prefix="/api/v1/assessments", tags=["intake"])
@@ -21,7 +22,8 @@ async def get_intake_overview(
     session: AsyncSession = Depends(get_session),
     service: IntakeService = Depends(get_intake_service),
 ) -> IntakeOverviewResponseDTO:
-    return await service.get_intake_overview(session=session, assessment_id=assessment_id)
+    result = await service.get_intake_overview(session=session, assessment_id=assessment_id)
+    return IntakeOverviewResponseDTO.model_validate(result)
 
 
 @router.patch(
@@ -40,10 +42,14 @@ async def update_question_response(
             session=session,
             assessment_id=assessment_id,
             question_id=question_id,
-            payload=payload,
+            payload=IntakeQuestionUpdateCommand(
+                selected_option_id=payload.selectedOptionId,
+                answer_value=payload.answerValue,
+                fields_set=frozenset(payload.model_fields_set),
+            ),
         )
         await session.commit()
-        return response
+        return IntakeQuestionUpdateResponseDTO.model_validate(response)
     except Exception:
         await session.rollback()
         raise

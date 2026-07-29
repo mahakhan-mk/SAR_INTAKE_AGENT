@@ -7,7 +7,6 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.errors import AssessmentNotFoundError
 from app.repositories.document_repository import DocumentRepository
 from app.repositories.report_repository import InitialSarReportRepository
 from app.services.initial_sar_report_renderer import InitialSarReportRenderer, RenderedInitialSarReport

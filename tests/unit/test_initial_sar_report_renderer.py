@@ -8,20 +8,20 @@ from types import SimpleNamespace
 from uuid import UUID
 from zipfile import ZipFile
 
-from app.models.report_preview import (
-    ReportPreviewArchitectureDTO,
-    ReportPreviewAssessmentDTO,
-    ReportPreviewBusinessContactDetailsDTO,
-    ReportPreviewBusinessContinuityDTO,
-    ReportPreviewDataFlowDTO,
-    ReportPreviewDataHostedDTO,
-    ReportPreviewDocumentChecklistDTO,
-    ReportPreviewHostingDTO,
-    ReportPreviewResponseDTO,
-    ReportPreviewRiskAssessmentDTO,
-    ReportPreviewSolutionOverviewDTO,
-    ReportPreviewThirdPartyMeasuresDTO,
-    ReportPreviewVendorReputationDTO,
+from app.application.models import (
+    ReportPreviewArchitecture as ReportPreviewArchitectureDTO,
+    ReportPreviewAssessment as ReportPreviewAssessmentDTO,
+    ReportPreviewBusinessContactDetails as ReportPreviewBusinessContactDetailsDTO,
+    ReportPreviewBusinessContinuity as ReportPreviewBusinessContinuityDTO,
+    ReportPreviewDataFlow as ReportPreviewDataFlowDTO,
+    ReportPreviewDataHosted as ReportPreviewDataHostedDTO,
+    ReportPreviewDocumentChecklist as ReportPreviewDocumentChecklistDTO,
+    ReportPreviewHosting as ReportPreviewHostingDTO,
+    ReportPreviewResult as ReportPreviewResponseDTO,
+    ReportPreviewRiskAssessment as ReportPreviewRiskAssessmentDTO,
+    ReportPreviewSolutionOverview as ReportPreviewSolutionOverviewDTO,
+    ReportPreviewThirdPartyMeasures as ReportPreviewThirdPartyMeasuresDTO,
+    ReportPreviewVendorReputation as ReportPreviewVendorReputationDTO,
 )
 from app.services.initial_sar_report_renderer import (
     DOCX_CONTENT_TYPE,

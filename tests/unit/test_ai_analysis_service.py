@@ -6,11 +6,11 @@ import uuid
 
 import pytest
 
-from app.api.errors import AssessmentNotFoundError
+from app.application.models import AIAnalysisQuestionRow, AIAnalysisResult, AIAnalysisRunSummary
+from app.domain.errors import AssessmentNotFoundError
 from app.models.ai_analysis import AIAnalysisQuestionRowRecord, AIAnalysisRunRecord, AIAnalysisViewRecord
-from app.models.dto import AIAnalysisQuestionRowDTO, AIAnalysisResponseDTO, AIAnalysisRunSummaryDTO
 from app.models.enums import AnalysisRunStatus, RiskLevel
-from app.services.ai_analysis_service import AIAnalysisService
+from app.services.ai_analysis_service import AIAnalysisQueryService
 
 pytestmark = pytest.mark.asyncio
 
@@ -47,16 +47,16 @@ def build_view_record() -> AIAnalysisViewRecord:
     )
 
 
-def build_response_dto() -> AIAnalysisResponseDTO:
-    return AIAnalysisResponseDTO(
+def build_response_dto() -> AIAnalysisResult:
+    return AIAnalysisResult(
         assessmentId="00000000-0000-0000-0000-000000000100",
-        latestAnalysisRun=AIAnalysisRunSummaryDTO(
+        latestAnalysisRun=AIAnalysisRunSummary(
             analysisRunId="00000000-0000-0000-0000-000000000200",
             status=AnalysisRunStatus.COMPLETED,
             createdAt=datetime(2026, 7, 21, 12, 0, tzinfo=timezone.utc),
         ),
         questions=[
-            AIAnalysisQuestionRowDTO(
+            AIAnalysisQuestionRow(
                 questionId="00000000-0000-0000-0000-000000000300",
                 questionNumber="TRIAGE-001",
                 questionText="Does the tool handle sensitive data?",
@@ -78,13 +78,13 @@ def build_response_dto() -> AIAnalysisResponseDTO:
 def build_service(
     *,
     repository_result: AIAnalysisViewRecord | None = None,
-    assembler_result: AIAnalysisResponseDTO | None = None,
-) -> tuple[AIAnalysisService, AsyncMock, MagicMock]:
+    assembler_result: AIAnalysisResult | None = None,
+) -> tuple[AIAnalysisQueryService, AsyncMock, MagicMock]:
     repository = AsyncMock()
     repository.load_ai_analysis_view = AsyncMock(return_value=repository_result)
     assembler = MagicMock()
     assembler.to_dto = MagicMock(return_value=assembler_result)
-    return AIAnalysisService(analysis_repository=repository, assembler=assembler), repository, assembler
+    return AIAnalysisQueryService(analysis_repository=repository, assembler=assembler), repository, assembler
 
 
 async def test_repository_is_called_with_the_assessment_uuid():

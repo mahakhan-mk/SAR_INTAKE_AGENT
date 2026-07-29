@@ -1,39 +1,39 @@
-from app.models.dto import (
-    ExecutiveSummaryDTO,
-    InherentRiskResponseDTO,
+from app.application.models import (
+    InherentRiskExecutiveSummary,
+    InherentRiskLinks,
+    InherentRiskResponse,
     InherentRiskScreenState,
-    InherentRiskValueDTO,
-    LinksDTO,
-    TopRiskDriverDTO,
+    InherentRiskTopRiskDriver,
+    InherentRiskValue,
 )
+
 
 SOURCE_TEXT = "Derived from SAR triage questions."
 
 
 class InherentRiskAssembler:
-    def to_dto(self, state: InherentRiskScreenState) -> InherentRiskResponseDTO:
+    def to_dto(self, state: InherentRiskScreenState) -> InherentRiskResponse:
         assessment_id = str(state.assessment_id)
-        analysis_run_id = str(state.analysis_run_id) if state.analysis_run_id is not None else None
-        return InherentRiskResponseDTO(
-            assessmentId=assessment_id,
-            analysisRunId=analysis_run_id,
+        return InherentRiskResponse(
+            assessmentId=state.assessment_id,
+            analysisRunId=state.analysis_run_id,
             status=state.status,
-            inherentRisk=InherentRiskValueDTO(
+            inherentRisk=InherentRiskValue(
                 level=state.inherent_risk_level,
                 label=state.inherent_risk_level.label,
                 highRiskQuestionCount=state.high_risk_question_count,
                 sourceText=SOURCE_TEXT,
             ),
             topRiskDrivers=[
-                TopRiskDriverDTO(domain=driver.domain, level=driver.level)
+                InherentRiskTopRiskDriver(domain=driver.domain, level=driver.level)
                 for driver in state.top_risk_drivers
             ],
-            executiveSummary=ExecutiveSummaryDTO(
+            executiveSummary=InherentRiskExecutiveSummary(
                 text=state.executive_summary_text,
                 status=state.executive_summary_status,
                 generatedAt=state.executive_summary_generated_at,
             ),
-            links=LinksDTO(
+            links=InherentRiskLinks(
                 aiAnalysis=f"/api/v1/assessments/{assessment_id}/ai-analysis",
                 reportPreview=f"/api/v1/assessments/{assessment_id}/report-preview",
             ),

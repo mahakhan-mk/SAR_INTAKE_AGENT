@@ -9,21 +9,19 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.schemas import ReportPreviewResponseDTO
 from app.api.dependencies import (
     get_initial_sar_report_generation_service,
-    get_initial_sar_report_repository,
-    get_initial_sar_report_storage,
+    get_report_download_service,
     get_report_preview_service,
     get_session,
 )
-from app.api.errors import AssessmentNotFoundError
-from app.repositories.report_repository import InitialSarReportRepository
+from app.domain.errors import AssessmentNotFoundError
 from app.services.initial_sar_report_generation_service import (
     GeneratedInitialSarReportResult,
     InitialSarReportGenerationService,
 )
-from app.services.initial_sar_report_storage import InitialSarReportStorage
-from app.services.report_service import ReportPreviewService
+from app.services.report_service import ReportDownloadService, ReportPreviewService
 
 router = APIRouter(prefix="/api/v1", tags=["reports"])
 
@@ -56,7 +54,8 @@ async def get_report_preview(
     session: AsyncSession = Depends(get_session),
     service: ReportPreviewService = Depends(get_report_preview_service),
 ) -> dict[str, object]:
-    dto = await service.get_report_preview(session=session, assessment_id=assessment_id)
+    result = await service.get_report_preview(session=session, assessment_id=assessment_id)
+    dto = ReportPreviewResponseDTO.model_validate(result)
     return dto.model_dump(mode="json", serialize_as_any=True)
 
 
@@ -64,6 +63,7 @@ async def get_report_preview(
 async def create_initial_sar_report(
     assessment_id: UUID,
     session: AsyncSession = Depends(get_session),
+    # Temporary synchronous worker-execution compatibility dependency.
     service: InitialSarReportGenerationService = Depends(get_initial_sar_report_generation_service),
 ) -> InitialSarReportCreateResponseDTO:
     result: GeneratedInitialSarReportResult | None = None
@@ -97,13 +97,13 @@ async def create_initial_sar_report(
 async def get_initial_sar_report(
     report_id: UUID,
     session: AsyncSession = Depends(get_session),
-    repository: InitialSarReportRepository = Depends(get_initial_sar_report_repository),
+    service: ReportDownloadService = Depends(get_report_download_service),
 ) -> InitialSarReportMetadataDTO:
-    report = await repository.get_report(session, report_id)
+    report = await service.get_report_metadata(session, report_id)
     if report is None:
         raise HTTPException(status_code=404, detail="Report not found.")
     return InitialSarReportMetadataDTO(
-        reportId=report.id,
+        reportId=report.report_id,
         assessmentId=report.assessment_id,
         sourceWorkflowVersion=report.source_workflow_version,
         reportVersion=report.report_version,
@@ -121,19 +121,17 @@ async def get_initial_sar_report(
 async def download_initial_sar_report(
     report_id: UUID,
     session: AsyncSession = Depends(get_session),
-    repository: InitialSarReportRepository = Depends(get_initial_sar_report_repository),
-    storage: InitialSarReportStorage = Depends(get_initial_sar_report_storage),
+    service: ReportDownloadService = Depends(get_report_download_service),
 ) -> StreamingResponse:
-    report = await repository.get_report(session, report_id)
-    if report is None:
-        raise HTTPException(status_code=404, detail="Report not found.")
     try:
-        opened_report = await storage.open_report(report.storage_container, report.storage_key)
+        report = await service.download_report(session, report_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Report not found.") from exc
-    headers = {"Content-Disposition": f'attachment; filename="{report.original_filename}"'}
+    if report is None:
+        raise HTTPException(status_code=404, detail="Report not found.")
+    headers = {"Content-Disposition": f'attachment; filename="{report.filename}"'}
     return StreamingResponse(
-        BytesIO(opened_report.content),
-        media_type=opened_report.content_type,
+        BytesIO(report.content),
+        media_type=report.content_type,
         headers=headers,
     )

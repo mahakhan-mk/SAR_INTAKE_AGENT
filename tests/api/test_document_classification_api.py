@@ -13,7 +13,7 @@ from app.main import app
 from app.models.database import DocumentClassificationReview, DocumentChecklistRun, SarAssessment
 from app.models.enums import DocumentType
 from app.repositories.document_repository import DocumentRepository
-from app.services.document_checklist_service import DocumentChecklistService
+from app.services.document_checklist_service import DocumentChecklistExecutionService
 from app.services.document_storage import InMemoryDocumentStorage
 
 pytestmark = pytest.mark.asyncio
@@ -162,7 +162,7 @@ async def test_cross_assessment_document_rejected(client, db_session, seeded_ass
 
 async def test_classification_review_does_not_regenerate_checklist(client, db_session, seeded_assessment):
     document = await upload_document(client, seeded_assessment["assessment_id"], system_document_type="Unclassified")
-    await DocumentChecklistService().generate_checklist_run(db_session, seeded_assessment["assessment_id"])
+    await DocumentChecklistExecutionService().generate_checklist_run(db_session, seeded_assessment["assessment_id"])
     await db_session.commit()
 
     response = await create_review(

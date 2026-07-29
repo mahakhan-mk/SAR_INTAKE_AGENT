@@ -8,13 +8,14 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from app.api.dependencies import get_intake_service, get_session
+from app.assemblers.intake_assembler import IntakeAssembler
+from app.domain.errors import IntakeQuestionNotFoundError
 from app.main import app
 from app.models.database import AssessmentResponse
 from app.models.enums import RiskLevel
 from app.repositories.assessment_repository import AssessmentRepository
 from app.repositories.response_repository import ResponseRepository
-from app.services.intake_service import IntakeQuestionNotFoundError, IntakeService
-from app.assemblers.intake_assembler import IntakeAssembler
+from app.services.intake_service import IntakeService
 from tests.conftest import add_question_with_options, add_questionnaire_version, add_response
 
 pytestmark = pytest.mark.asyncio

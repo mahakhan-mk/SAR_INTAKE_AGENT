@@ -5,9 +5,14 @@ import inspect
 from types import SimpleNamespace
 from uuid import UUID
 
+from app.api.schemas import ReportPreviewResponseDTO
 from app.assemblers.report_preview_assembler import ReportPreviewAssembler
-from app.models.dto import TopRiskDriverState
+from app.application.models import TopRiskDriverState
 from app.models.enums import AnalysisRunStatus, RiskLevel
+
+
+def _payload(result) -> dict[str, object]:
+    return ReportPreviewResponseDTO.model_validate(result).model_dump(mode="json", serialize_as_any=True)
 
 
 def build_assessment() -> SimpleNamespace:
@@ -155,7 +160,7 @@ def test_full_input_maps_to_expected_report_preview_shape():
         source_system="ServiceNow",
     )
 
-    assert dto.model_dump(mode="json", serialize_as_any=True) == {
+    assert _payload(dto) == {
         "assessmentId": "00000000-0000-0000-0000-000000000001",
         "generatedAt": "2026-07-27T12:00:00Z",
         "assessment": {
@@ -260,7 +265,7 @@ def test_missing_analysis_produces_partial_valid_dto():
         checklist_state=build_checklist_state(),
         architecture_document=build_architecture_document(),
     )
-    payload = dto.model_dump(mode="json", serialize_as_any=True)
+    payload = _payload(dto)
 
     assert payload["riskAssessment"]["status"] is None
     assert payload["riskAssessment"]["inherentRiskLevel"] is None
@@ -279,7 +284,7 @@ def test_missing_checklist_produces_partial_valid_dto():
         checklist_state=None,
         architecture_document=build_architecture_document(),
     )
-    payload = dto.model_dump(mode="json", serialize_as_any=True)
+    payload = _payload(dto)
 
     assert payload["documentChecklist"] == {
         "summary": None,
@@ -300,7 +305,7 @@ def test_missing_architecture_document_produces_null_metadata():
         checklist_state=build_checklist_state(),
         architecture_document=None,
     )
-    payload = dto.model_dump(mode="json", serialize_as_any=True)
+    payload = _payload(dto)
 
     assert payload["architecture"] == {
         "architectureDetails": None,
@@ -323,7 +328,7 @@ def test_explicit_question_mapping_populates_only_mapped_fields():
             build_response("business_continuity_rating", "Tier 1"),
         ],
     )
-    payload = dto.model_dump(mode="json", serialize_as_any=True)
+    payload = _payload(dto)
 
     assert payload["businessContactDetails"]["businessUnit"] == "Consulting"
     assert payload["solutionOverview"]["launchDate"] == "2027-01-15"
@@ -344,7 +349,7 @@ def test_unknown_question_code_is_ignored():
             ),
         ],
     )
-    payload = dto.model_dump(mode="json", serialize_as_any=True)
+    payload = _payload(dto)
 
     assert payload["businessContactDetails"]["businessUnit"] is None
     assert payload["architecture"]["architectureDetails"] is None
@@ -358,7 +363,7 @@ def test_checklist_missing_required_count_uses_effective_verdict():
         response_records=[],
         checklist_state=build_checklist_state(),
     )
-    payload = dto.model_dump(mode="json", serialize_as_any=True)
+    payload = _payload(dto)
 
     assert payload["documentChecklist"]["missingRequiredCount"] == 2
 
@@ -371,7 +376,7 @@ def test_output_does_not_expose_blob_storage_fields():
         response_records=[],
         architecture_document=build_architecture_document(),
     )
-    payload_text = str(dto.model_dump(mode="json", serialize_as_any=True))
+    payload_text = str(_payload(dto))
 
     assert "storage_container" not in payload_text
     assert "storage_key" not in payload_text
@@ -387,7 +392,7 @@ def test_launch_date_remains_under_solution_overview():
         assessment=build_assessment(),
         response_records=[build_response("when_is_the_expected_launch_date", "2026-12-31")],
     )
-    payload = dto.model_dump(mode="json", serialize_as_any=True)
+    payload = _payload(dto)
 
     assert payload["solutionOverview"]["launchDate"] == "2026-12-31"
     assert "launchDate" not in payload["assessment"]
@@ -407,7 +412,7 @@ def test_architecture_details_remains_null_when_no_mapped_response_exists():
         ],
         architecture_document=build_architecture_document(),
     )
-    payload = dto.model_dump(mode="json", serialize_as_any=True)
+    payload = _payload(dto)
 
     assert payload["architecture"]["architectureDetails"] is None
     assert payload["architecture"]["filename"] == "architecture-diagram.pdf"
@@ -432,7 +437,7 @@ def test_explicit_top_risk_drivers_are_serialized_with_enum_values():
         response_records=[],
         analysis_snapshot=analysis_snapshot,
     )
-    payload = dto.model_dump(mode="json", serialize_as_any=True)
+    payload = _payload(dto)
 
     assert payload["riskAssessment"]["topRiskDrivers"] == [
         {"domain": "domain-alpha", "level": "critical"},
@@ -467,8 +472,8 @@ def test_missing_or_none_top_risk_drivers_returns_empty_list():
         analysis_snapshot=none_snapshot,
     )
 
-    assert missing_dto.model_dump(mode="json", serialize_as_any=True)["riskAssessment"]["topRiskDrivers"] == []
-    assert none_dto.model_dump(mode="json", serialize_as_any=True)["riskAssessment"]["topRiskDrivers"] == []
+    assert _payload(missing_dto)["riskAssessment"]["topRiskDrivers"] == []
+    assert _payload(none_dto)["riskAssessment"]["topRiskDrivers"] == []
 
 
 def test_malformed_top_risk_drivers_are_skipped():
@@ -491,7 +496,7 @@ def test_malformed_top_risk_drivers_are_skipped():
         response_records=[],
         analysis_snapshot=analysis_snapshot,
     )
-    payload = dto.model_dump(mode="json", serialize_as_any=True)
+    payload = _payload(dto)
 
     assert payload["riskAssessment"]["topRiskDrivers"] == [
         {"domain": "domain-alpha", "level": "high"},
@@ -516,7 +521,7 @@ def test_question_results_are_not_used_to_derive_top_risk_drivers():
         response_records=[],
         analysis_snapshot=analysis_snapshot,
     )
-    payload = dto.model_dump(mode="json", serialize_as_any=True)
+    payload = _payload(dto)
 
     assert payload["riskAssessment"]["topRiskDrivers"] == []
 
@@ -537,7 +542,7 @@ def test_camel_case_top_risk_drivers_are_supported():
         response_records=[],
         analysis_snapshot=analysis_snapshot,
     )
-    payload = dto.model_dump(mode="json", serialize_as_any=True)
+    payload = _payload(dto)
 
     assert payload["riskAssessment"]["topRiskDrivers"] == [
         {"domain": "domain-alpha", "level": "critical"},

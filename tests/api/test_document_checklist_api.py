@@ -7,15 +7,14 @@ import uuid
 import pytest
 from fastapi.routing import APIRoute
 from httpx import ASGITransport, AsyncClient
-from app.api.dependencies import get_session
+from app.api.dependencies import get_document_checklist_query_service, get_session
 from app.api.router import api_router
-from app.api.v1.document_checklist import get_document_checklist_service
 from app.main import app
 from app.models.database import AssessmentDocument, DocumentChecklistRun
 from app.models.enums import ChecklistVerdict, DocumentType
 from app.repositories.document_checklist_repository import DocumentChecklistRepository
 from app.repositories.vendor_certification_repository import vendor_reputation_hitl_reviews, vendor_reputation_jobs
-from app.services.document_checklist_service import DocumentChecklistService
+from app.services.document_checklist_service import DocumentChecklistExecutionService, DocumentChecklistQueryService
 
 pytestmark = pytest.mark.asyncio
 
@@ -165,17 +164,11 @@ async def test_post_commits_once(session_factory, seeded_assessment):
 
 async def test_get_does_not_commit_or_regenerate(session_factory, seeded_assessment):
     async with session_factory() as seed_session:
-        await DocumentChecklistService().generate_checklist(seed_session, seeded_assessment["assessment_id"])
+        await DocumentChecklistExecutionService().generate_checklist(seed_session, seeded_assessment["assessment_id"])
         await seed_session.commit()
 
     commit_calls = 0
     generate_calls = 0
-
-    class GuardedService(DocumentChecklistService):
-        async def generate_checklist(self, session, assessment_id):
-            nonlocal generate_calls
-            generate_calls += 1
-            raise AssertionError("GET must not regenerate a checklist.")
 
     async with session_factory() as session:
         async def commit_spy():
@@ -189,7 +182,7 @@ async def test_get_does_not_commit_or_regenerate(session_factory, seeded_assessm
             yield session
 
         app.dependency_overrides[get_session] = override_get_session
-        app.dependency_overrides[get_document_checklist_service] = lambda: GuardedService()
+        app.dependency_overrides[get_document_checklist_query_service] = lambda: DocumentChecklistQueryService()
         try:
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as test_client:
                 response = await test_client.get(

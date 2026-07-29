@@ -3,8 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from uuid import UUID
 
-from app.models.report_preview import (
-    REPORT_PREVIEW_QUESTION_CODE_TO_FIELD_NAME,
+from app.api.schemas import (
     ReportPreviewArchitectureDTO,
     ReportPreviewAssessmentDTO,
     ReportPreviewBusinessContactDetailsDTO,
@@ -18,6 +17,9 @@ from app.models.report_preview import (
     ReportPreviewSolutionOverviewDTO,
     ReportPreviewThirdPartyMeasuresDTO,
     ReportPreviewVendorReputationDTO,
+)
+from app.models.report_preview import (
+    REPORT_PREVIEW_QUESTION_CODE_TO_FIELD_NAME,
 )
 
 
@@ -83,6 +85,8 @@ def test_report_preview_response_dto_serializes_expected_shape():
         "riskAssessment": {
             "inherentRiskLevel": "high",
             "executiveSummary": "Deterministic summary text.",
+            "status": None,
+            "topRiskDrivers": [],
         },
         "businessContactDetails": {
             "businessUnit": "Tax",
@@ -94,6 +98,9 @@ def test_report_preview_response_dto_serializes_expected_shape():
         },
         "architecture": {
             "architectureDetails": None,
+            "documentId": None,
+            "filename": None,
+            "contentType": None,
         },
         "hosting": {
             "hostingModel": "SaaS",
@@ -119,6 +126,9 @@ def test_report_preview_response_dto_serializes_expected_shape():
         },
         "documentChecklist": {
             "summary": None,
+            "status": None,
+            "items": [],
+            "missingRequiredCount": None,
         },
         "vendorReputation": {
             "summary": None,
@@ -184,4 +194,3 @@ def test_report_preview_question_code_mapping_uses_only_explicit_seeded_codes():
         "is_there_an_sla_document_available_if_yes_please_provide_for_review": "thirdPartyMeasures.sla",
     }
     assert "architecture.architectureDetails" not in REPORT_PREVIEW_QUESTION_CODE_TO_FIELD_NAME.values()
-

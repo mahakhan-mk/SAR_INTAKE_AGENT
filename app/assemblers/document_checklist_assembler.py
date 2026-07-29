@@ -1,18 +1,18 @@
 from __future__ import annotations
 
-from app.models.document_checklist import (
-    AssessmentDocumentListResponseDTO,
-    AssessmentDocumentResponseDTO,
-    DocumentClassificationReviewResponseDTO,
-    DocumentChecklistItemResponseDTO,
+from app.application.models import (
+    AssessmentDocumentListResponse,
+    AssessmentDocumentResponse,
+    DocumentClassificationReviewResponse,
+    DocumentChecklistItemResponse,
     DocumentChecklistReadState,
-    DocumentChecklistResponseDTO,
+    DocumentChecklistResponse,
 )
 
 
 class DocumentChecklistAssembler:
-    def to_document_dto(self, document) -> AssessmentDocumentResponseDTO:
-        return AssessmentDocumentResponseDTO(
+    def to_document_dto(self, document) -> AssessmentDocumentResponse:
+        return AssessmentDocumentResponse(
             document_id=document.id,
             assessment_id=document.assessment_id,
             original_filename=document.original_filename,
@@ -26,8 +26,8 @@ class DocumentChecklistAssembler:
             deleted_at=document.deleted_at,
         )
 
-    def to_document_list_dto(self, documents) -> AssessmentDocumentListResponseDTO:
-        return AssessmentDocumentListResponseDTO(
+    def to_document_list_dto(self, documents) -> AssessmentDocumentListResponse:
+        return AssessmentDocumentListResponse(
             documents=[self.to_document_dto(document) for document in documents],
         )
 
@@ -37,8 +37,8 @@ class DocumentChecklistAssembler:
         review,
         assessment_id,
         effective_document_type: str,
-    ) -> DocumentClassificationReviewResponseDTO:
-        return DocumentClassificationReviewResponseDTO(
+    ) -> DocumentClassificationReviewResponse:
+        return DocumentClassificationReviewResponse(
             review_id=review.id,
             document_id=review.document_id,
             assessment_id=assessment_id,
@@ -49,8 +49,8 @@ class DocumentChecklistAssembler:
             effective_document_type=effective_document_type,
         )
 
-    def to_dto(self, state: DocumentChecklistReadState) -> DocumentChecklistResponseDTO:
-        return DocumentChecklistResponseDTO(
+    def to_dto(self, state: DocumentChecklistReadState) -> DocumentChecklistResponse:
+        return DocumentChecklistResponse(
             run_id=state.run.id,
             assessment_id=state.run.assessment_id,
             status=state.run.status,
@@ -64,8 +64,8 @@ class DocumentChecklistAssembler:
             ],
         )
 
-    def to_item_dto(self, item_state) -> DocumentChecklistItemResponseDTO:
-        return DocumentChecklistItemResponseDTO(
+    def to_item_dto(self, item_state) -> DocumentChecklistItemResponse:
+        return DocumentChecklistItemResponse(
             item_id=item_state.item.id,
             document_type=item_state.item.document_type,
             item_order=item_state.item.item_order,

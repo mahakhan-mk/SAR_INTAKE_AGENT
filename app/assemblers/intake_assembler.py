@@ -1,12 +1,12 @@
 
 from __future__ import annotations
 
-from app.models.dto import (
-    IntakeHeaderDTO,
-    IntakeOverviewResponseDTO,
-    IntakeQuestionDTO,
-    IntakeSectionDTO,
-    IntakeTriageQuestionDTO,
+from app.application.models import (
+    IntakeHeader,
+    IntakeOverviewResult,
+    IntakeQuestion,
+    IntakeSection,
+    IntakeTriageQuestion,
 )
 from app.models.intake import IntakeOverviewRecord
 
@@ -21,21 +21,21 @@ SECTION_TITLES: dict[str, str] = {
 
 
 class IntakeAssembler:
-    def to_dto(self, record: IntakeOverviewRecord) -> IntakeOverviewResponseDTO:
-        return IntakeOverviewResponseDTO(
-            assessmentId=str(record.assessment_id),
-            header=IntakeHeaderDTO(
+    def to_dto(self, record: IntakeOverviewRecord) -> IntakeOverviewResult:
+        return IntakeOverviewResult(
+            assessmentId=record.assessment_id,
+            header=IntakeHeader(
                 technologyName=record.header.technology_name,
                 sourceSystem=record.header.source_system,
                 questionnaireVersion=record.header.questionnaire_version,
             ),
             sections=[
-                IntakeSectionDTO(
+                IntakeSection(
                     code=self._require_section_code(section.code),
                     title=self._section_title(section.code),
                     questions=[
-                        IntakeQuestionDTO(
-                            questionId=str(question.question_id),
+                        IntakeQuestion(
+                            questionId=question.question_id,
                             questionCode=question.question_code,
                             label=question.label,
                             answer=question.answer,
@@ -49,8 +49,8 @@ class IntakeAssembler:
                 for section in record.sections
             ],
             triage=[
-                IntakeTriageQuestionDTO(
-                    questionId=str(question.question_id),
+                IntakeTriageQuestion(
+                    questionId=question.question_id,
                     questionCode=question.question_code,
                     label=question.label,
                     answer=question.answer,

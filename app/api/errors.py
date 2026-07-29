@@ -1,27 +1,17 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-
-class AssessmentNotFoundError(Exception):
-    pass
-
-
-class AnalysisRunNotFoundError(Exception):
-    pass
-
-
-class AnalysisRunStatusConflictError(Exception):
-    def __init__(self, status: str) -> None:
-        self.status = status
+from app.domain.errors import (
+    AnalysisRunNotFoundError,
+    AnalysisRunStatusConflictError,
+    AssessmentNotFoundError,
+    IntakeQuestionHiddenError,
+    IntakeQuestionNotFoundError,
+    IntakeQuestionOptionError,
+)
 
 
 def register_exception_handlers(app: FastAPI) -> None:
-    from app.services.intake_service import (
-        IntakeQuestionHiddenError,
-        IntakeQuestionNotFoundError,
-        IntakeQuestionOptionError,
-    )
-
     @app.exception_handler(AssessmentNotFoundError)
     async def handle_assessment_not_found(
         request: Request,

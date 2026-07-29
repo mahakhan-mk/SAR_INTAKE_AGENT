@@ -6,9 +6,10 @@ import uuid
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.errors import AnalysisRunNotFoundError, AnalysisRunStatusConflictError
 from app.assemblers.inherent_risk_assembler import InherentRiskAssembler
+from app.application.models import TopRiskDriverState
 from app.config import PercentageInherentRiskScoringPolicy
+from app.domain.errors import AnalysisRunNotFoundError, AnalysisRunStatusConflictError
 from app.llm.client import (
     AzureExecutiveSummaryClient,
     AzureOpenAIClientSettings,
@@ -16,12 +17,11 @@ from app.llm.client import (
 )
 from app.llm.executive_summary import ExecutiveSummaryPromptConfig, ExecutiveSummaryPromptLoader
 from app.models.database import QuestionAnalysisRun
-from app.models.dto import TopRiskDriverState
 from app.models.enums import AnalysisRunStatus, ExecutiveSummaryStatus, RiskLevel
 from app.repositories.analysis_repository import AnalysisRepository
 from app.repositories.assessment_repository import AssessmentRepository
 from app.services.executive_summary_service import ExecutiveSummaryService
-from app.services.inherent_risk_service import InherentRiskService
+from app.services.inherent_risk_service import InherentRiskExecutionService
 from tests.conftest import add_question_with_options, add_response
 
 pytestmark = pytest.mark.asyncio
@@ -43,11 +43,10 @@ class SequencedSummaryClient:
         return outcome
 
 
-def build_inherent_risk_service() -> InherentRiskService:
-    return InherentRiskService(
+def build_inherent_risk_service() -> InherentRiskExecutionService:
+    return InherentRiskExecutionService(
         assessment_repository=AssessmentRepository(),
         analysis_repository=AnalysisRepository(),
-        assembler=InherentRiskAssembler(),
         scoring_policy=PercentageInherentRiskScoringPolicy(),
     )
 

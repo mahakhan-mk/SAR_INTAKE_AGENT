@@ -1,22 +1,28 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.errors import AssessmentNotFoundError
 from app.assemblers.report_preview_assembler import ReportPreviewAssembler
+from app.application.models import (
+    DocumentChecklistItemReadState,
+    DocumentChecklistReadState,
+    ReportPreviewResult,
+    TopRiskDriverState,
+)
+from app.domain.errors import AssessmentNotFoundError
 from app.models.database import AssessmentDocument, DocumentChecklistItem, DocumentChecklistItemReview, DocumentChecklistRun
-from app.models.document_checklist import DocumentChecklistItemReadState, DocumentChecklistReadState
-from app.models.dto import TopRiskDriverState
 from app.models.enums import AnalysisRunStatus, AssessmentDocumentSystemType, RiskLevel
-from app.models.report_preview import ReportPreviewResponseDTO
 from app.repositories.analysis_repository import AnalysisRepository
 from app.repositories.assessment_repository import AssessmentRepository
 from app.repositories.document_checklist_repository import DocumentChecklistRepository, DocumentChecklistRunRecord
 from app.repositories.document_repository import DocumentRepository
-from app.services.inherent_risk_service import InherentRiskService
+from app.repositories.report_repository import InitialSarReportRepository
+from app.services.inherent_risk_service import InherentRiskQueryService
+from app.services.initial_sar_report_storage import InitialSarReportStorage
 
 
 @dataclass(frozen=True)
@@ -33,6 +39,28 @@ class ReportPreviewAnalysisState:
     top_risk_drivers: list[TopRiskDriverState]
 
 
+@dataclass(frozen=True)
+class InitialSarReportMetadata:
+    report_id: UUID
+    assessment_id: UUID
+    source_workflow_version: int
+    report_version: int
+    original_filename: str
+    content_type: str
+    file_size_bytes: int
+    sha256: str
+    limitations: list[object]
+    created_at: datetime
+    stale_at: datetime | None
+
+
+@dataclass(frozen=True)
+class DownloadedInitialSarReport:
+    filename: str
+    content_type: str
+    content: bytes
+
+
 class ReportPreviewService:
     def __init__(
         self,
@@ -41,7 +69,7 @@ class ReportPreviewService:
         analysis_repository: AnalysisRepository,
         checklist_repository: DocumentChecklistRepository,
         document_repository: DocumentRepository,
-        inherent_risk_service: InherentRiskService,
+        inherent_risk_service: InherentRiskQueryService,
         assembler: ReportPreviewAssembler,
     ) -> None:
         self.assessment_repository = assessment_repository
@@ -55,7 +83,7 @@ class ReportPreviewService:
         self,
         session: AsyncSession,
         assessment_id: UUID,
-    ) -> ReportPreviewResponseDTO:
+    ) -> ReportPreviewResult:
         assessment = await self.assessment_repository.get_assessment(session, assessment_id)
         if assessment is None:
             raise AssessmentNotFoundError()
@@ -171,3 +199,51 @@ class ReportPreviewService:
         if not isinstance(first_document_id, (str, UUID)):
             return None
         return first_document_id if isinstance(first_document_id, UUID) else UUID(first_document_id)
+
+
+class ReportDownloadService:
+    def __init__(
+        self,
+        *,
+        repository: InitialSarReportRepository,
+        storage: InitialSarReportStorage,
+    ) -> None:
+        self.repository = repository
+        self.storage = storage
+
+    async def get_report_metadata(
+        self,
+        session: AsyncSession,
+        report_id: UUID,
+    ) -> InitialSarReportMetadata | None:
+        report = await self.repository.get_report(session, report_id)
+        if report is None:
+            return None
+        return InitialSarReportMetadata(
+            report_id=report.id,
+            assessment_id=report.assessment_id,
+            source_workflow_version=report.source_workflow_version,
+            report_version=report.report_version,
+            original_filename=report.original_filename,
+            content_type=report.content_type,
+            file_size_bytes=report.file_size_bytes,
+            sha256=report.sha256,
+            limitations=list(report.limitations or []),
+            created_at=report.created_at,
+            stale_at=report.stale_at,
+        )
+
+    async def download_report(
+        self,
+        session: AsyncSession,
+        report_id: UUID,
+    ) -> DownloadedInitialSarReport | None:
+        report = await self.repository.get_report(session, report_id)
+        if report is None:
+            return None
+        opened_report = await self.storage.open_report(report.storage_container, report.storage_key)
+        return DownloadedInitialSarReport(
+            filename=report.original_filename,
+            content_type=opened_report.content_type,
+            content=opened_report.content,
+        )

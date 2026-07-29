@@ -13,7 +13,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 import yaml
 
-from app.models.report_preview import ReportPreviewResponseDTO
+from app.application.models import ReportPreviewResult
 
 DOCX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 IMAGE_RELATIONSHIP_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image"
@@ -48,7 +48,7 @@ class InitialSarReportRenderer:
 
     def render(
         self,
-        preview: ReportPreviewResponseDTO,
+        preview: ReportPreviewResult,
         *,
         architecture_image_bytes: bytes | None = None,
     ) -> RenderedInitialSarReport:
@@ -101,7 +101,7 @@ class InitialSarReportRenderer:
                 rendered_zip.writestr(name, data)
         return output.getvalue()
 
-    def _build_context(self, preview: ReportPreviewResponseDTO) -> dict[str, object]:
+    def _build_context(self, preview: ReportPreviewResult) -> dict[str, object]:
         context_config: dict[str, str] = self.mapping.get("context", {})
         context: dict[str, object] = {}
         for context_key, source_path in context_config.items():

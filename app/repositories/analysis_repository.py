@@ -20,7 +20,7 @@ from app.models.database import (
     QuestionnaireVersion,
     SarAssessment,
 )
-from app.models.dto import ComputedQuestionRisk, StoredAnalysisSnapshot
+from app.application.models import ComputedQuestionRisk, StoredAnalysisSnapshot
 from app.models.enums import AnalysisRunStatus, ExecutiveSummaryStatus, QuestionnaireType, RiskLevel
 
 SUCCESSFUL_RUN_STATUSES = (

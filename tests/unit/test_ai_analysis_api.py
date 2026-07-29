@@ -9,15 +9,17 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from app.api.dependencies import get_session
-from app.api.errors import AssessmentNotFoundError, register_exception_handlers
-from app.api.v1.ai_analysis import get_ai_analysis_service, router
-from app.models.dto import AIAnalysisQuestionRowDTO, AIAnalysisResponseDTO, AIAnalysisRunSummaryDTO
+from app.api.errors import register_exception_handlers
+from app.api.schemas import AIAnalysisQuestionRowDTO, AIAnalysisResponseDTO, AIAnalysisRunSummaryDTO
+from app.api.dependencies import get_ai_analysis_query_service
+from app.api.v1.ai_analysis import router
+from app.domain.errors import AssessmentNotFoundError
 from app.models.enums import AnalysisRunStatus, RiskLevel
 
 pytestmark = pytest.mark.asyncio
 
 
-class FakeAIAnalysisService:
+class FakeAIAnalysisQueryService:
     def __init__(self, response: AIAnalysisResponseDTO | None = None, error: Exception | None = None) -> None:
         self.response = response
         self.error = error
@@ -65,13 +67,13 @@ def build_dto() -> AIAnalysisResponseDTO:
 
 async def test_valid_assessment_returns_200_with_dto_payload(ai_analysis_client):
     dto = build_dto()
-    service = FakeAIAnalysisService(response=dto)
+    service = FakeAIAnalysisQueryService(response=dto)
     dummy_session = object()
 
     async def override_get_session():
         yield dummy_session
 
-    ai_analysis_client.dependency_overrides[get_ai_analysis_service] = lambda: service
+    ai_analysis_client.dependency_overrides[get_ai_analysis_query_service] = lambda: service
     ai_analysis_client.dependency_overrides[get_session] = override_get_session
 
     async with AsyncClient(transport=ASGITransport(app=ai_analysis_client), base_url="http://testserver") as client:
@@ -89,14 +91,14 @@ async def test_valid_assessment_returns_200_with_dto_payload(ai_analysis_client)
 
 async def test_assessment_uuid_is_passed_to_the_service(ai_analysis_client):
     dto = build_dto()
-    service = FakeAIAnalysisService(response=dto)
+    service = FakeAIAnalysisQueryService(response=dto)
     dummy_session = object()
     assessment_id = uuid.uuid4()
 
     async def override_get_session():
         yield dummy_session
 
-    ai_analysis_client.dependency_overrides[get_ai_analysis_service] = lambda: service
+    ai_analysis_client.dependency_overrides[get_ai_analysis_query_service] = lambda: service
     ai_analysis_client.dependency_overrides[get_session] = override_get_session
 
     async with AsyncClient(transport=ASGITransport(app=ai_analysis_client), base_url="http://testserver") as client:
@@ -108,13 +110,13 @@ async def test_assessment_uuid_is_passed_to_the_service(ai_analysis_client):
 
 
 async def test_unknown_assessment_uses_existing_404_error_response(ai_analysis_client):
-    service = FakeAIAnalysisService(error=AssessmentNotFoundError())
+    service = FakeAIAnalysisQueryService(error=AssessmentNotFoundError())
     dummy_session = object()
 
     async def override_get_session():
         yield dummy_session
 
-    ai_analysis_client.dependency_overrides[get_ai_analysis_service] = lambda: service
+    ai_analysis_client.dependency_overrides[get_ai_analysis_query_service] = lambda: service
     ai_analysis_client.dependency_overrides[get_session] = override_get_session
 
     async with AsyncClient(transport=ASGITransport(app=ai_analysis_client), base_url="http://testserver") as client:
@@ -126,13 +128,13 @@ async def test_unknown_assessment_uses_existing_404_error_response(ai_analysis_c
 
 
 async def test_invalid_uuid_returns_422(ai_analysis_client):
-    service = FakeAIAnalysisService(response=build_dto())
+    service = FakeAIAnalysisQueryService(response=build_dto())
     dummy_session = object()
 
     async def override_get_session():
         yield dummy_session
 
-    ai_analysis_client.dependency_overrides[get_ai_analysis_service] = lambda: service
+    ai_analysis_client.dependency_overrides[get_ai_analysis_query_service] = lambda: service
     ai_analysis_client.dependency_overrides[get_session] = override_get_session
 
     async with AsyncClient(transport=ASGITransport(app=ai_analysis_client), base_url="http://testserver") as client:
@@ -143,13 +145,13 @@ async def test_invalid_uuid_returns_422(ai_analysis_client):
 
 
 async def test_service_is_called_exactly_once(ai_analysis_client):
-    service = FakeAIAnalysisService(response=build_dto())
+    service = FakeAIAnalysisQueryService(response=build_dto())
     dummy_session = object()
 
     async def override_get_session():
         yield dummy_session
 
-    ai_analysis_client.dependency_overrides[get_ai_analysis_service] = lambda: service
+    ai_analysis_client.dependency_overrides[get_ai_analysis_query_service] = lambda: service
     ai_analysis_client.dependency_overrides[get_session] = override_get_session
 
     async with AsyncClient(transport=ASGITransport(app=ai_analysis_client), base_url="http://testserver") as client:

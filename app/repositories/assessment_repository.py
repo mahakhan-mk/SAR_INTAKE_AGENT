@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.database import AssessmentResponse, QuestionDefinition, QuestionOption, QuestionnaireVersion, SarAssessment
-from app.models.dto import TriagedQuestionLoadResult, TriagedQuestionResponse
+from app.application.models import TriagedQuestionLoadResult, TriagedQuestionResponse
 from app.models.intake import (
     IntakeHeaderRecord,
     IntakeOverviewRecord,

@@ -5,7 +5,7 @@ import uuid
 
 import pytest
 
-from app.api.errors import AssessmentNotFoundError
+from app.domain.errors import AssessmentNotFoundError
 from app.services.initial_sar_report_generation_service import InitialSarReportGenerationService
 from app.services.initial_sar_report_renderer import RenderedInitialSarReport
 from app.services.initial_sar_report_storage import OpenedInitialSarReport, StoredInitialSarReport

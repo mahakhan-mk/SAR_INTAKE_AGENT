@@ -10,13 +10,13 @@ from httpx import ASGITransport, AsyncClient
 
 import app.main as main_module
 from app.api.dependencies import get_session
-from app.api.errors import AssessmentNotFoundError
 from app.api.router import api_router
-from app.api.v1.ai_analysis import get_ai_analysis_service
+from app.api.dependencies import get_ai_analysis_query_service
+from app.domain.errors import AssessmentNotFoundError
 from app.main import app, lifespan
 
 
-class FakeAIAnalysisService:
+class FakeAIAnalysisQueryService:
     def __init__(self, error: Exception | None = None) -> None:
         self.error = error
         self.get_ai_analysis = AsyncMock(side_effect=self._call)
@@ -67,13 +67,13 @@ def test_api_router_is_included_only_once():
 
 @pytest.mark.asyncio
 async def test_existing_exception_handlers_remain_active():
-    service = FakeAIAnalysisService(error=AssessmentNotFoundError())
+    service = FakeAIAnalysisQueryService(error=AssessmentNotFoundError())
 
     async def override_get_session():
         yield object()
 
     app.dependency_overrides[get_session] = override_get_session
-    app.dependency_overrides[get_ai_analysis_service] = lambda: service
+    app.dependency_overrides[get_ai_analysis_query_service] = lambda: service
 
     try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:

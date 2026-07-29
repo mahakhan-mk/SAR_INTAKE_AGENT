@@ -6,17 +6,17 @@ import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.errors import AssessmentNotFoundError
 from app.assemblers.inherent_risk_assembler import InherentRiskAssembler
-from app.config import InherentRiskScoringPolicy
-from app.models.dto import (
-    AnalysisRunCreateResponseDTO,
+from app.application.models import (
+    AnalysisRunCreateResult,
     ComputedQuestionRisk,
     InherentRiskScreenState,
     StoredAnalysisSnapshot,
     TopRiskDriverState,
     TriagedQuestionLoadResult,
 )
+from app.config import InherentRiskScoringPolicy
+from app.domain.errors import AssessmentNotFoundError
 from app.models.enums import AnalysisRunStatus, ExecutiveSummaryStatus, RiskLevel
 from app.repositories.analysis_repository import AnalysisRepository
 from app.repositories.assessment_repository import AssessmentRepository
@@ -26,65 +26,16 @@ MISSING_RESPONSES_LIMITATION = "One or more triage questions are unanswered; sco
 UNRESOLVED_LIMITATION = "One or more stored responses could not be resolved to a configured triage option."
 
 
-class InherentRiskService:
+class _InherentRiskStateBuilder:
     def __init__(
         self,
         assessment_repository: AssessmentRepository,
         analysis_repository: AnalysisRepository,
-        assembler: InherentRiskAssembler,
-        scoring_policy: InherentRiskScoringPolicy,
+        assembler: InherentRiskAssembler | None,
     ) -> None:
         self.assessment_repository = assessment_repository
         self.analysis_repository = analysis_repository
         self.assembler = assembler
-        self.scoring_policy = scoring_policy
-
-    async def get_inherent_risk_screen(self, session: AsyncSession, assessment_id: uuid.UUID):
-        assessment = await self.assessment_repository.get_assessment(session, assessment_id)
-        if assessment is None:
-            raise AssessmentNotFoundError()
-
-        snapshot = await self.analysis_repository.get_latest_completed_snapshot(session, assessment_id)
-        if snapshot is None:
-            snapshot = await self._create_and_persist_analysis(
-                session=session,
-                assessment_id=assessment_id,
-                persist_empty_run=False,
-            )
-
-        if snapshot is None:
-            return self.assembler.to_dto(self._not_assessed_state(assessment_id, analysis_run_id=None))
-
-        return self.assembler.to_dto(self._build_state_from_snapshot(assessment_id, snapshot))
-
-    async def create_analysis_run(
-        self,
-        session: AsyncSession,
-        assessment_id: uuid.UUID,
-        force: bool = False,
-    ) -> AnalysisRunCreateResponseDTO:
-        del force
-
-        assessment = await self.assessment_repository.get_assessment(session, assessment_id)
-        if assessment is None:
-            raise AssessmentNotFoundError()
-
-        snapshot = await self._create_and_persist_analysis(
-            session=session,
-            assessment_id=assessment_id,
-            persist_empty_run=True,
-        )
-
-        if snapshot is None:
-            return AnalysisRunCreateResponseDTO(
-                analysisRunId="",
-                status=AnalysisRunStatus.COMPLETED_WITH_LIMITATIONS,
-            )
-
-        return AnalysisRunCreateResponseDTO(
-            analysisRunId=str(snapshot.analysis_run_id),
-            status=snapshot.status,
-        )
 
     def _build_state_from_snapshot(
         self,
@@ -123,6 +74,84 @@ class InherentRiskService:
             executive_summary_status=ExecutiveSummaryStatus.NOT_GENERATED,
             executive_summary_text=None,
             executive_summary_generated_at=None,
+        )
+
+    def derive_top_risk_drivers(
+        self,
+        question_results: Sequence[ComputedQuestionRisk],
+    ) -> list[TopRiskDriverState]:
+        grouped: dict[str, list[ComputedQuestionRisk]] = defaultdict(list)
+        for result in question_results:
+            if result.risk_level in {RiskLevel.HIGH, RiskLevel.CRITICAL}:
+                grouped[result.risk_domain].append(result)
+
+        ranked_domains: list[tuple[int, float, str, RiskLevel]] = []
+        for domain, domain_results in grouped.items():
+            highest_level = max((result.risk_level for result in domain_results), key=lambda level: level.rank)
+            highest_weight = max(result.risk_weight for result in domain_results)
+            ranked_domains.append((highest_level.rank, highest_weight, domain, highest_level))
+
+        ranked_domains.sort(key=lambda item: (-item[0], -item[1], item[2]))
+        return [
+            TopRiskDriverState(domain=domain, level=level)
+            for _, _, domain, level in ranked_domains
+        ]
+
+
+class InherentRiskQueryService(_InherentRiskStateBuilder):
+    async def get_inherent_risk_screen(self, session: AsyncSession, assessment_id: uuid.UUID):
+        assessment = await self.assessment_repository.get_assessment(session, assessment_id)
+        if assessment is None:
+            raise AssessmentNotFoundError()
+
+        snapshot = await self.analysis_repository.get_latest_completed_snapshot(session, assessment_id)
+        if snapshot is None:
+            return self.assembler.to_dto(self._not_assessed_state(assessment_id, analysis_run_id=None))
+
+        return self.assembler.to_dto(self._build_state_from_snapshot(assessment_id, snapshot))
+
+
+class InherentRiskExecutionService(_InherentRiskStateBuilder):
+    def __init__(
+        self,
+        assessment_repository: AssessmentRepository,
+        analysis_repository: AnalysisRepository,
+        scoring_policy: InherentRiskScoringPolicy,
+    ) -> None:
+        super().__init__(
+            assessment_repository=assessment_repository,
+            analysis_repository=analysis_repository,
+            assembler=None,
+        )
+        self.scoring_policy = scoring_policy
+
+    async def create_analysis_run(
+        self,
+        session: AsyncSession,
+        assessment_id: uuid.UUID,
+        force: bool = False,
+    ) -> AnalysisRunCreateResult:
+        del force
+
+        assessment = await self.assessment_repository.get_assessment(session, assessment_id)
+        if assessment is None:
+            raise AssessmentNotFoundError()
+
+        snapshot = await self._create_and_persist_analysis(
+            session=session,
+            assessment_id=assessment_id,
+            persist_empty_run=True,
+        )
+
+        if snapshot is None:
+            return AnalysisRunCreateResult(
+                analysisRunId="",
+                status=AnalysisRunStatus.COMPLETED_WITH_LIMITATIONS,
+            )
+
+        return AnalysisRunCreateResult(
+            analysisRunId=str(snapshot.analysis_run_id),
+            status=snapshot.status,
         )
 
     async def _create_and_persist_analysis(
@@ -250,23 +279,3 @@ class InherentRiskService:
             limitations.append(UNRESOLVED_LIMITATION)
         return limitations
 
-    def derive_top_risk_drivers(
-        self,
-        question_results: Sequence[ComputedQuestionRisk],
-    ) -> list[TopRiskDriverState]:
-        grouped: dict[str, list[ComputedQuestionRisk]] = defaultdict(list)
-        for result in question_results:
-            if result.risk_level in {RiskLevel.HIGH, RiskLevel.CRITICAL}:
-                grouped[result.risk_domain].append(result)
-
-        ranked_domains: list[tuple[int, float, str, RiskLevel]] = []
-        for domain, domain_results in grouped.items():
-            highest_level = max((result.risk_level for result in domain_results), key=lambda level: level.rank)
-            highest_weight = max(result.risk_weight for result in domain_results)
-            ranked_domains.append((highest_level.rank, highest_weight, domain, highest_level))
-
-        ranked_domains.sort(key=lambda item: (-item[0], -item[1], item[2]))
-        return [
-            TopRiskDriverState(domain=domain, level=level)
-            for _, _, domain, level in ranked_domains
-        ]

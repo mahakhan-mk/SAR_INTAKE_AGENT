@@ -6,23 +6,27 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.dependencies import get_session
-from app.assemblers.document_checklist_assembler import DocumentChecklistAssembler
-from app.config import get_settings
-from app.models.document_checklist import (
+from app.api.dependencies import (
+    get_document_checklist_assembler,
+    get_document_command_service,
+    get_document_query_service,
+    get_document_storage,
+    get_session,
+)
+from app.api.schemas import (
     AssessmentDocumentListResponseDTO,
     AssessmentDocumentResponseDTO,
     DocumentClassificationReviewRequestDTO,
     DocumentClassificationReviewResponseDTO,
 )
+from app.assemblers.document_checklist_assembler import DocumentChecklistAssembler
+from app.domain.errors import AssessmentDocumentNotFoundError, DuplicateAssessmentDocumentError
 from app.models.enums import AssessmentDocumentSystemType
 from app.services.document_service import (
-    AssessmentDocumentNotFoundError,
-    DocumentService,
+    DocumentCommandService,
+    DocumentQueryService,
     DocumentUploadInput,
-    DuplicateAssessmentDocumentError,
 )
-from app.services.document_storage import AzureBlobDocumentStorage, DocumentStorage
 
 router = APIRouter(prefix="/api/v1/assessments", tags=["documents"])
 
@@ -34,24 +38,6 @@ class ParsedMultipartFile:
     content: bytes
     fields: dict[str, str]
 
-def get_document_storage() -> DocumentStorage:
-    return AzureBlobDocumentStorage.from_settings(get_settings())
-
-
-def get_document_service(
-) -> DocumentService:
-    return DocumentService()
-
-
-def get_document_upload_service(
-    storage: DocumentStorage = Depends(get_document_storage),
-) -> DocumentService:
-    return DocumentService(storage=storage)
-
-
-def get_document_assembler() -> DocumentChecklistAssembler:
-    return DocumentChecklistAssembler()
-
 
 @router.post("/{assessment_id}/documents", response_model=AssessmentDocumentResponseDTO)
 async def upload_assessment_document(
@@ -60,8 +46,8 @@ async def upload_assessment_document(
     system_document_type: AssessmentDocumentSystemType = Query(AssessmentDocumentSystemType.UNCLASSIFIED),
     uploaded_by: str | None = Query(None),
     session: AsyncSession = Depends(get_session),
-    service: DocumentService = Depends(get_document_upload_service),
-    assembler: DocumentChecklistAssembler = Depends(get_document_assembler),
+    service: DocumentCommandService = Depends(get_document_command_service),
+    assembler: DocumentChecklistAssembler = Depends(get_document_checklist_assembler),
 ) -> AssessmentDocumentResponseDTO:
     document = None
     try:
@@ -77,7 +63,7 @@ async def upload_assessment_document(
                 uploaded_by=parsed_upload.fields.get("uploaded_by", uploaded_by),
             ),
         )
-        response = assembler.to_document_dto(document)
+        response = AssessmentDocumentResponseDTO.model_validate(assembler.to_document_dto(document))
         await session.commit()
         return response
     except AssessmentDocumentNotFoundError as exc:
@@ -106,12 +92,12 @@ async def upload_assessment_document(
 async def list_assessment_documents(
     assessment_id: UUID,
     session: AsyncSession = Depends(get_session),
-    service: DocumentService = Depends(get_document_service),
-    assembler: DocumentChecklistAssembler = Depends(get_document_assembler),
+    service: DocumentQueryService = Depends(get_document_query_service),
+    assembler: DocumentChecklistAssembler = Depends(get_document_checklist_assembler),
 ) -> AssessmentDocumentListResponseDTO:
     try:
         documents = await service.list_active_documents(session, assessment_id=assessment_id)
-        return assembler.to_document_list_dto(documents)
+        return AssessmentDocumentListResponseDTO.model_validate(assembler.to_document_list_dto(documents))
     except AssessmentDocumentNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Assessment not found.") from exc
 
@@ -122,8 +108,8 @@ async def delete_assessment_document(
     document_id: UUID,
     deleted_by: str | None = Query(None),
     session: AsyncSession = Depends(get_session),
-    service: DocumentService = Depends(get_document_service),
-    assembler: DocumentChecklistAssembler = Depends(get_document_assembler),
+    service: DocumentCommandService = Depends(get_document_command_service),
+    assembler: DocumentChecklistAssembler = Depends(get_document_checklist_assembler),
 ) -> AssessmentDocumentResponseDTO:
     try:
         document = await service.soft_delete_document(
@@ -132,7 +118,7 @@ async def delete_assessment_document(
             document_id=document_id,
             deleted_by=deleted_by,
         )
-        response = assembler.to_document_dto(document)
+        response = AssessmentDocumentResponseDTO.model_validate(assembler.to_document_dto(document))
         await session.commit()
         return response
     except AssessmentDocumentNotFoundError as exc:
@@ -152,8 +138,8 @@ async def create_document_classification_review(
     document_id: UUID,
     payload: DocumentClassificationReviewRequestDTO,
     session: AsyncSession = Depends(get_session),
-    service: DocumentService = Depends(get_document_service),
-    assembler: DocumentChecklistAssembler = Depends(get_document_assembler),
+    service: DocumentCommandService = Depends(get_document_command_service),
+    assembler: DocumentChecklistAssembler = Depends(get_document_checklist_assembler),
 ) -> DocumentClassificationReviewResponseDTO:
     try:
         review = await service.append_classification_review(
@@ -164,11 +150,11 @@ async def create_document_classification_review(
             reason=payload.reason,
             reviewed_by=payload.reviewed_by,
         )
-        response = assembler.to_classification_review_dto(
+        response = DocumentClassificationReviewResponseDTO.model_validate(assembler.to_classification_review_dto(
             review=review,
             assessment_id=assessment_id,
             effective_document_type=review.document_type,
-        )
+        ))
         await session.commit()
         return response
     except AssessmentDocumentNotFoundError as exc:

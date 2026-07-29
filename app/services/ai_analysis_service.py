@@ -4,13 +4,13 @@ import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.errors import AssessmentNotFoundError
 from app.assemblers.ai_analysis_assembler import AIAnalysisAssembler
-from app.models.dto import AIAnalysisResponseDTO
+from app.application.models import AIAnalysisResult
+from app.domain.errors import AssessmentNotFoundError
 from app.repositories.analysis_repository import AnalysisRepository
 
 
-class AIAnalysisService:
+class AIAnalysisQueryService:
     def __init__(
         self,
         analysis_repository: AnalysisRepository,
@@ -23,8 +23,9 @@ class AIAnalysisService:
         self,
         session: AsyncSession,
         assessment_id: uuid.UUID,
-    ) -> AIAnalysisResponseDTO:
+    ) -> AIAnalysisResult:
         view = await self.analysis_repository.load_ai_analysis_view(session, assessment_id)
         if view is None:
             raise AssessmentNotFoundError()
         return self.assembler.to_dto(view)
+

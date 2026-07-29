@@ -5,19 +5,19 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import select
 
-from app.api.errors import AssessmentNotFoundError
 from app.assemblers.intake_assembler import IntakeAssembler
-from app.models.database import AssessmentResponse
-from app.models.dto import IntakeQuestionUpdateRequestDTO
-from app.models.enums import RiskLevel
-from app.repositories.assessment_repository import AssessmentRepository
-from app.repositories.response_repository import ResponseRepository
-from app.services.intake_service import (
+from app.application.models import IntakeQuestionUpdateCommand
+from app.domain.errors import (
+    AssessmentNotFoundError,
     IntakeQuestionHiddenError,
     IntakeQuestionNotFoundError,
     IntakeQuestionOptionError,
-    IntakeService,
 )
+from app.models.database import AssessmentResponse
+from app.models.enums import RiskLevel
+from app.repositories.assessment_repository import AssessmentRepository
+from app.repositories.response_repository import ResponseRepository
+from app.services.intake_service import IntakeService
 from tests.conftest import add_question_with_options, add_questionnaire_version, add_response
 
 pytestmark = pytest.mark.asyncio
@@ -28,6 +28,14 @@ def build_service(response_repository: ResponseRepository | None = None) -> Inta
         assessment_repository=AssessmentRepository(),
         response_repository=response_repository or ResponseRepository(),
         assembler=IntakeAssembler(),
+    )
+
+
+def update_command(**kwargs) -> IntakeQuestionUpdateCommand:
+    return IntakeQuestionUpdateCommand(
+        selected_option_id=kwargs.get("selectedOptionId"),
+        answer_value=kwargs.get("answerValue"),
+        fields_set=frozenset(kwargs),
     )
 
 
@@ -95,7 +103,7 @@ async def test_update_question_response_creates_then_updates_successfully(db_ses
         db_session,
         assessment_id=seeded_assessment["assessment_id"],
         question_id=question.id,
-        payload=IntakeQuestionUpdateRequestDTO(selectedOptionId=options[0].id, answerValue="Initial"),
+        payload=update_command(selectedOptionId=options[0].id, answerValue="Initial"),
     )
 
     assert created.questionId == question.id
@@ -114,7 +122,7 @@ async def test_update_question_response_creates_then_updates_successfully(db_ses
         db_session,
         assessment_id=seeded_assessment["assessment_id"],
         question_id=question.id,
-        payload=IntakeQuestionUpdateRequestDTO(answerValue="Updated"),
+        payload=update_command(answerValue="Updated"),
     )
 
     assert updated.questionId == question.id
@@ -135,7 +143,7 @@ async def test_update_question_response_rejects_invalid_question(db_session, see
             db_session,
             assessment_id=seeded_assessment["assessment_id"],
             question_id=str(uuid4()),
-            payload=IntakeQuestionUpdateRequestDTO(answerValue="Updated"),
+            payload=update_command(answerValue="Updated"),
         )
 
 
@@ -153,7 +161,7 @@ async def test_update_question_response_rejects_hidden_question(db_session, seed
             db_session,
             assessment_id=seeded_assessment["assessment_id"],
             question_id=question.id,
-            payload=IntakeQuestionUpdateRequestDTO(answerValue="Updated"),
+            payload=update_command(answerValue="Updated"),
         )
 
 
@@ -178,7 +186,7 @@ async def test_update_question_response_rejects_invalid_option(db_session, seede
             db_session,
             assessment_id=seeded_assessment["assessment_id"],
             question_id=question.id,
-            payload=IntakeQuestionUpdateRequestDTO(selectedOptionId=other_options[0].id),
+            payload=update_command(selectedOptionId=other_options[0].id),
         )
 
 
@@ -202,7 +210,7 @@ async def test_update_question_response_allows_explicit_null_clearing(db_session
         db_session,
         assessment_id=seeded_assessment["assessment_id"],
         question_id=question.id,
-        payload=IntakeQuestionUpdateRequestDTO(selectedOptionId=None, answerValue=None),
+        payload=update_command(selectedOptionId=None, answerValue=None),
     )
 
     assert updated.questionId == question.id
@@ -220,13 +228,14 @@ async def test_update_question_response_selected_option_id_survives_database_rel
         risk_domain="Security",
         options=[("Selected", RiskLevel.HIGH, 3.0, "High signal")],
     )
+
     service = build_service()
 
     await service.update_question_response(
         db_session,
         assessment_id=seeded_assessment["assessment_id"],
         question_id=question.id,
-        payload=IntakeQuestionUpdateRequestDTO(selectedOptionId=options[0].id),
+        payload=update_command(selectedOptionId=options[0].id),
     )
 
     expected_option_code = options[0].option_code
@@ -286,7 +295,7 @@ async def test_update_question_response_service_does_not_manage_transaction_on_f
             db_session,
             assessment_id=seeded_assessment["assessment_id"],
             question_id=question.id,
-            payload=IntakeQuestionUpdateRequestDTO(selectedOptionId=options[0].id),
+            payload=update_command(selectedOptionId=options[0].id),
         )
 
     assert rollback_calls == 0

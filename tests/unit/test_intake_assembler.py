@@ -4,6 +4,7 @@ from uuid import UUID
 
 import pytest
 
+from app.api.schemas import IntakeQuestionDTO, IntakeTriageQuestionDTO
 from app.assemblers.intake_assembler import IntakeAssembler
 from app.models.intake import (
     IntakeHeaderRecord,
@@ -123,7 +124,7 @@ def test_question_field_mapping_and_preserved_ordering():
         UUID("00000000-0000-0000-0000-000000000002"),
         UUID("00000000-0000-0000-0000-000000000001"),
     ]
-    assert dto.sections[0].questions[0].model_dump(mode="json") == {
+    assert IntakeQuestionDTO.model_validate(dto.sections[0].questions[0]).model_dump(mode="json") == {
         "questionId": "00000000-0000-0000-0000-000000000002",
         "questionCode": "GEN-002",
         "label": "Second question",
@@ -132,7 +133,7 @@ def test_question_field_mapping_and_preserved_ordering():
         "required": False,
         "riskDomain": "Operations",
     }
-    assert dto.sections[0].questions[1].model_dump(mode="json") == {
+    assert IntakeQuestionDTO.model_validate(dto.sections[0].questions[1]).model_dump(mode="json") == {
         "questionId": "00000000-0000-0000-0000-000000000001",
         "questionCode": "GEN-001",
         "label": "First question",
@@ -174,7 +175,7 @@ def test_triage_mapping():
         UUID("00000000-0000-0000-0000-000000000402"),
         UUID("00000000-0000-0000-0000-000000000401"),
     ]
-    assert dto.triage[0].model_dump(mode="json") == {
+    assert IntakeTriageQuestionDTO.model_validate(dto.triage[0]).model_dump(mode="json") == {
         "questionId": "00000000-0000-0000-0000-000000000402",
         "questionCode": "TRIAGE-002",
         "label": "Second triage question",

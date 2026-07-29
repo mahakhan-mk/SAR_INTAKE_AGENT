@@ -12,11 +12,11 @@ from httpx import ASGITransport, AsyncClient
 from app.api.dependencies import get_session
 from app.api.errors import register_exception_handlers
 from app.api.router import api_router
-from app.api.v1.ai_analysis import get_ai_analysis_service
-from app.models.dto import AIAnalysisQuestionRowDTO, AIAnalysisResponseDTO, AIAnalysisRunSummaryDTO
+from app.api.schemas import AIAnalysisQuestionRowDTO, AIAnalysisResponseDTO, AIAnalysisRunSummaryDTO
+from app.api.dependencies import get_ai_analysis_query_service
 from app.models.enums import AnalysisRunStatus, RiskLevel
 
-class FakeAIAnalysisService:
+class FakeAIAnalysisQueryService:
     def __init__(self, response: AIAnalysisResponseDTO) -> None:
         self.get_ai_analysis = AsyncMock(return_value=response)
 
@@ -49,7 +49,7 @@ def build_ai_analysis_dto() -> AIAnalysisResponseDTO:
     )
 
 
-def build_test_app(service: FakeAIAnalysisService) -> FastAPI:
+def build_test_app(service: FakeAIAnalysisQueryService) -> FastAPI:
     app = FastAPI()
     register_exception_handlers(app)
     app.include_router(api_router)
@@ -58,7 +58,7 @@ def build_test_app(service: FakeAIAnalysisService) -> FastAPI:
         yield object()
 
     app.dependency_overrides[get_session] = override_get_session
-    app.dependency_overrides[get_ai_analysis_service] = lambda: service
+    app.dependency_overrides[get_ai_analysis_query_service] = lambda: service
     return app
 
 
@@ -88,7 +88,7 @@ def test_ai_analysis_router_is_included_in_main_api_router():
 
 async def test_get_ai_analysis_route_resolves_successfully():
     dto = build_ai_analysis_dto()
-    service = FakeAIAnalysisService(dto)
+    service = FakeAIAnalysisQueryService(dto)
     app = build_test_app(service)
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:

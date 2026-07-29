@@ -3,9 +3,18 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from uuid import UUID
 
+from app.api.schemas import AIAnalysisQuestionRowDTO, AIAnalysisResponseDTO
 from app.assemblers.ai_analysis_assembler import AIAnalysisAssembler
 from app.models.ai_analysis import AIAnalysisQuestionRowRecord, AIAnalysisRunRecord, AIAnalysisViewRecord
 from app.models.enums import AnalysisRunStatus
+
+
+def _payload(result) -> dict[str, object]:
+    return AIAnalysisResponseDTO.model_validate(result).model_dump(mode="json")
+
+
+def _row_payload(row) -> dict[str, object]:
+    return AIAnalysisQuestionRowDTO.model_validate(row).model_dump(mode="json")
 
 
 def build_view(
@@ -81,7 +90,7 @@ def test_complete_view_maps_to_expected_dto():
 
     dto = assembler.to_dto(view)
 
-    assert dto.model_dump(mode="json") == {
+    assert _payload(dto) == {
         "assessmentId": "00000000-0000-0000-0000-000000000100",
         "latestAnalysisRun": {
             "analysisRunId": "00000000-0000-0000-0000-000000000200",
@@ -104,8 +113,10 @@ def test_complete_view_maps_to_expected_dto():
             }
         ],
     }
-    assert "aiExplanation" not in dto.model_dump(mode="json")["questions"][0]
-    assert "confidence" not in dto.model_dump(mode="json")["questions"][0]
+    assert dto.questions[0].aiExplanation == "AI explanation text."
+    assert dto.questions[0].confidence == 0.85
+    assert "aiExplanation" not in _payload(dto)["questions"][0]
+    assert "confidence" not in _payload(dto)["questions"][0]
 
 
 def test_run_metadata_maps_correctly():
@@ -191,8 +202,10 @@ def test_ai_result_fields_map_correctly():
     assert row.riskBand.value == "critical"
     assert row.riskScore == 4.0
     assert row.whyItMatters == "Configured rationale remains separate."
-    assert "aiExplanation" not in row.model_dump(mode="json")
-    assert "confidence" not in row.model_dump(mode="json")
+    assert row.aiExplanation == "AI narrative."
+    assert row.confidence == 0.97
+    assert "aiExplanation" not in _row_payload(row)
+    assert "confidence" not in _row_payload(row)
 
 
 def test_reviewer_remarks_are_preserved():
@@ -260,8 +273,10 @@ def test_nullable_run_and_analysis_fields_are_handled():
     assert row.riskBand is None
     assert row.riskScore is None
     assert row.reviewerRemarks is None
-    assert "aiExplanation" not in row.model_dump(mode="json")
-    assert "confidence" not in row.model_dump(mode="json")
+    assert row.aiExplanation is None
+    assert row.confidence is None
+    assert "aiExplanation" not in _row_payload(row)
+    assert "confidence" not in _row_payload(row)
 
 
 def test_row_ordering_is_preserved():

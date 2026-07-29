@@ -7,7 +7,12 @@ import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.errors import AnalysisRunNotFoundError, AnalysisRunStatusConflictError, AssessmentNotFoundError
+from app.application.models import (
+    ExecutiveSummaryGenerateEnvelope,
+    ExecutiveSummaryGenerateResult,
+    StoredAnalysisSnapshot,
+)
+from app.domain.errors import AnalysisRunNotFoundError, AnalysisRunStatusConflictError, AssessmentNotFoundError
 from app.llm.client import (
     AzureExecutiveSummaryClient,
     AzureSummaryRequestError,
@@ -15,15 +20,10 @@ from app.llm.client import (
     InvalidSummaryOutputError,
 )
 from app.llm.executive_summary import ExecutiveSummaryPromptLoader
-from app.models.dto import (
-    ExecutiveSummaryGenerateEnvelopeDTO,
-    ExecutiveSummaryGenerateResponseDTO,
-    StoredAnalysisSnapshot,
-)
 from app.models.enums import AnalysisRunStatus, ExecutiveSummaryStatus, RiskLevel
 from app.repositories.analysis_repository import AnalysisRepository
 from app.repositories.assessment_repository import AssessmentRepository
-from app.services.inherent_risk_service import InherentRiskService
+from app.services.inherent_risk_service import InherentRiskExecutionService
 
 
 class ExecutiveSummaryService:
@@ -31,7 +31,7 @@ class ExecutiveSummaryService:
         self,
         assessment_repository: AssessmentRepository,
         analysis_repository: AnalysisRepository,
-        inherent_risk_service: InherentRiskService,
+        inherent_risk_service: InherentRiskExecutionService,
         prompt_loader: ExecutiveSummaryPromptLoader,
         llm_client: AzureExecutiveSummaryClient,
     ) -> None:
@@ -47,7 +47,7 @@ class ExecutiveSummaryService:
         assessment_id: uuid.UUID,
         analysis_run_id: uuid.UUID,
         force: bool = False,
-    ) -> ExecutiveSummaryGenerateResponseDTO:
+    ) -> ExecutiveSummaryGenerateResult:
         run = await self.analysis_repository.get_analysis_run_for_assessment(session, assessment_id, analysis_run_id)
         if run is None:
             raise AnalysisRunNotFoundError()
@@ -195,11 +195,11 @@ class ExecutiveSummaryService:
         text: str,
         status: ExecutiveSummaryStatus,
         generated_at: datetime,
-    ) -> ExecutiveSummaryGenerateResponseDTO:
-        return ExecutiveSummaryGenerateResponseDTO(
-            assessmentId=str(assessment_id),
-            analysisRunId=str(analysis_run_id),
-            executiveSummary=ExecutiveSummaryGenerateEnvelopeDTO(
+    ) -> ExecutiveSummaryGenerateResult:
+        return ExecutiveSummaryGenerateResult(
+            assessmentId=assessment_id,
+            analysisRunId=analysis_run_id,
+            executiveSummary=ExecutiveSummaryGenerateEnvelope(
                 text=text,
                 status=status,
                 generatedAt=generated_at,
