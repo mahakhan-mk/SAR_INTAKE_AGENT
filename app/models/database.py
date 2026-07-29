@@ -567,7 +567,7 @@ class OutboxMessage(Base):
     __tablename__ = "outbox_messages"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('pending','published','failed')",
+            "status IN ('pending','processing','published','failed')",
             name="outbox_messages_status_check",
         ),
         CheckConstraint("message_attempt >= 1", name="outbox_messages_message_attempt_check"),
@@ -603,6 +603,8 @@ class OutboxMessage(Base):
     actor_id: Mapped[str] = mapped_column(Text, nullable=False)
     payload: Mapped[dict[str, object]] = mapped_column(JSONB_TYPE, nullable=False, server_default=text("'{}'"))
     status: Mapped[str] = mapped_column(Text, nullable=False, default="pending")
+    locked_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     publish_attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

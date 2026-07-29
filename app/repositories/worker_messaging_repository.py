@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import select, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -29,6 +29,31 @@ class ClaimedTask:
 
 class TaskLeaseUnavailable(RuntimeError):
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class OutboxMessageRecord:
+    message_id: UUID
+    producer_component: str
+    exchange_name: str
+    message_type: str
+    schema_version: int
+    assessment_id: UUID
+    workflow_id: UUID
+    task_id: UUID | None
+    causation_id: UUID | None
+    expected_workflow_version: int | None
+    message_attempt: int
+    actor_id: str
+    payload: dict[str, Any]
+    status: str
+    locked_by: str | None
+    lease_expires_at: datetime | None
+    publish_attempt_count: int
+    available_at: datetime
+    published_at: datetime | None
+    last_error: str | None
+    created_at: datetime
 
 
 class ProcessedMessageRepository:
@@ -256,6 +281,8 @@ class WorkerOutboxRepository:
                 actor_id=actor_id,
                 payload=normalized_payload,
                 status="pending",
+                locked_by=None,
+                lease_expires_at=None,
                 publish_attempt_count=0,
                 available_at=datetime.now(UTC),
                 published_at=None,
@@ -271,41 +298,71 @@ class WorkerOutboxRepository:
         session: AsyncSession,
         *,
         limit: int,
-    ) -> list[OutboxMessage]:
-        now = datetime.now(UTC)
-        records = (
-            await session.execute(
-                select(OutboxMessage)
-                .where(
-                    OutboxMessage.status == "pending",
-                    OutboxMessage.available_at <= now,
+        locked_by: str,
+        lease_duration: timedelta,
+        now: datetime | None = None,
+    ) -> list[OutboxMessageRecord]:
+        if limit < 1:
+            raise ValueError("limit must be greater than or equal to 1")
+        owner = _required(locked_by, "locked_by")
+        if lease_duration.total_seconds() <= 0:
+            raise ValueError("lease_duration must be greater than 0")
+        reference_time = now or datetime.now(UTC)
+        candidate_ids = (
+            select(OutboxMessage.message_id)
+            .where(
+                or_(
+                    and_(
+                        OutboxMessage.status == "pending",
+                        OutboxMessage.available_at <= reference_time,
+                    ),
+                    and_(
+                        OutboxMessage.status == "processing",
+                        OutboxMessage.lease_expires_at.is_not(None),
+                        OutboxMessage.lease_expires_at <= reference_time,
+                    ),
                 )
-                .order_by(
-                    OutboxMessage.available_at,
-                    OutboxMessage.created_at,
-                    OutboxMessage.message_id,
-                )
-                .limit(limit)
-                .with_for_update(skip_locked=True)
             )
-        ).scalars().all()
-        return list(records)
+            .order_by(
+                OutboxMessage.available_at,
+                OutboxMessage.created_at,
+                OutboxMessage.message_id,
+            )
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        )
+        result = await session.execute(
+            update(OutboxMessage)
+            .where(OutboxMessage.message_id.in_(candidate_ids))
+            .values(
+                status="processing",
+                locked_by=owner,
+                lease_expires_at=reference_time + lease_duration,
+            )
+            .returning(*OutboxMessage.__table__.c)
+        )
+        return [_outbox_record(row._mapping) for row in result.all()]
 
     async def mark_published(
         self,
         session: AsyncSession,
         *,
         message_id: UUID,
+        locked_by: str,
     ) -> None:
+        owner = _required(locked_by, "locked_by")
         result = await session.execute(
             update(OutboxMessage)
             .where(
                 OutboxMessage.message_id == message_id,
-                OutboxMessage.status == "pending",
+                OutboxMessage.status == "processing",
+                OutboxMessage.locked_by == owner,
             )
             .values(
                 status="published",
                 published_at=datetime.now(UTC),
+                locked_by=None,
+                lease_expires_at=None,
                 publish_attempt_count=OutboxMessage.publish_attempt_count + 1,
                 last_error=None,
             )
@@ -318,6 +375,7 @@ class WorkerOutboxRepository:
         session: AsyncSession,
         *,
         message_id: UUID,
+        locked_by: str,
         current_attempt_count: int,
         max_attempts: int,
         error: Exception,
@@ -325,19 +383,24 @@ class WorkerOutboxRepository:
         next_attempt = current_attempt_count + 1
         terminal = next_attempt >= max_attempts
         delay = min(300, 2 * (2 ** max(0, next_attempt - 1)))
+        owner = _required(locked_by, "locked_by")
+        now = datetime.now(UTC)
         result = await session.execute(
             update(OutboxMessage)
             .where(
                 OutboxMessage.message_id == message_id,
-                OutboxMessage.status == "pending",
+                OutboxMessage.status == "processing",
+                OutboxMessage.locked_by == owner,
             )
             .values(
                 status="failed" if terminal else "pending",
+                locked_by=None,
+                lease_expires_at=None,
                 publish_attempt_count=next_attempt,
                 available_at=(
-                    datetime.now(UTC)
+                    now
                     if terminal
-                    else datetime.now(UTC) + timedelta(seconds=delay)
+                    else now + timedelta(seconds=delay)
                 ),
                 last_error=f"{type(error).__name__}: {error}"[:2000],
             )
@@ -359,3 +422,36 @@ def _claimed(task: WorkflowTask) -> ClaimedTask:
         lease_owner=task.lease_owner,
         lease_expires_at=task.lease_expires_at,
     )
+
+
+def _outbox_record(mapping: Any) -> OutboxMessageRecord:
+    return OutboxMessageRecord(
+        message_id=mapping["message_id"],
+        producer_component=mapping["producer_component"],
+        exchange_name=mapping["exchange_name"],
+        message_type=mapping["message_type"],
+        schema_version=mapping["schema_version"],
+        assessment_id=mapping["assessment_id"],
+        workflow_id=mapping["workflow_id"],
+        task_id=mapping["task_id"],
+        causation_id=mapping["causation_id"],
+        expected_workflow_version=mapping["expected_workflow_version"],
+        message_attempt=mapping["message_attempt"],
+        actor_id=mapping["actor_id"],
+        payload=dict(mapping["payload"] or {}),
+        status=mapping["status"],
+        locked_by=mapping["locked_by"],
+        lease_expires_at=mapping["lease_expires_at"],
+        publish_attempt_count=mapping["publish_attempt_count"],
+        available_at=mapping["available_at"],
+        published_at=mapping["published_at"],
+        last_error=mapping["last_error"],
+        created_at=mapping["created_at"],
+    )
+
+
+def _required(value: str, field_name: str) -> str:
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError(f"{field_name} must be a non-blank string")
+    return normalized

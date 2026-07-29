@@ -21,6 +21,16 @@ def test_platform_models_use_schema_token_and_required_constraints() -> None:
     outbox_constraint_names = {
         constraint.name for constraint in OutboxMessage.__table__.constraints
     }
+    outbox_status_constraint = next(
+        constraint
+        for constraint in OutboxMessage.__table__.constraints
+        if constraint.name == "outbox_messages_status_check"
+    )
     assert "workflow_tasks_lease_pair_check" in workflow_constraint_names
     assert "workflow_tasks_running_lease_check" in workflow_constraint_names
     assert "outbox_messages_status_check" in outbox_constraint_names
+    assert "locked_by" in OutboxMessage.__table__.c
+    assert OutboxMessage.__table__.c.locked_by.nullable is True
+    assert "lease_expires_at" in OutboxMessage.__table__.c
+    assert OutboxMessage.__table__.c.lease_expires_at.nullable is True
+    assert "processing" in str(outbox_status_constraint.sqltext)

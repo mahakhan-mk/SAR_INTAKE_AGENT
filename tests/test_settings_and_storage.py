@@ -13,6 +13,7 @@ def test_settings_require_database_schema(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://u:p@localhost/db")
     monkeypatch.delenv("DATABASE_SCHEMA", raising=False)
     monkeypatch.setenv("RABBITMQ_URL", "amqp://guest:guest@localhost/")
+    monkeypatch.setattr("app.config.load_dotenv", lambda *args, **kwargs: None)
     with pytest.raises(SettingsError):
         get_settings()
 
