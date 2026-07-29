@@ -251,7 +251,7 @@ async def test_active_foreign_lease_rejection(
         status="running",
         attempt_count=1,
         lease_owner="host-b:456:worker-b",
-        lease_expires_at=NOW + timedelta(seconds=30),
+        lease_expires_at=datetime.now(UTC) + timedelta(seconds=30),
         started_at=NOW,
     )
     repository = WorkflowTaskExecutionRepository()

@@ -79,7 +79,14 @@ class CommandProcessor:
         except LookupError as exc:
             raise NonRetryableCommandFailure(str(exc)) from exc
 
-        claimed = await self._claim_task(envelope)
+        try:
+            claimed = await self._claim_task(envelope)
+        except TaskLeaseUnavailable as exc:
+            raise InfrastructureFailure(str(exc)) from exc
+        except SQLAlchemyError as exc:
+            raise InfrastructureFailure(str(exc)) from exc
+        except (LookupError, ValueError) as exc:
+            raise NonRetryableCommandFailure(str(exc)) from exc
         if not claimed:
             return False
 

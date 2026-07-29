@@ -127,26 +127,16 @@ class WorkflowTaskExecutionRepository:
 
         now = datetime.now(UTC)
         if task.status == "running":
+            lease_expires_at = _as_utc(task.lease_expires_at)
             if task.attempt_count != attempt:
                 relation = "stale" if attempt < task.attempt_count else "future"
                 raise ValueError(
                     f"{relation} attempt {attempt}; current attempt is {task.attempt_count}"
                 )
-            lease_expires_at = _as_utc(task.lease_expires_at)
-            lease_is_active = (
-                lease_expires_at is not None
-                and lease_expires_at > now
-                and task.lease_owner != lease_owner
-            )
-            if lease_is_active:
+            if lease_expires_at is not None and lease_expires_at > now:
                 raise TaskLeaseUnavailable(
                     f"task {task.id} is leased by {task.lease_owner} until "
                     f"{lease_expires_at.isoformat()}"
-                )
-            if attempt != task.attempt_count:
-                relation = "stale" if attempt < task.attempt_count else "future"
-                raise ValueError(
-                    f"{relation} attempt {attempt}; current attempt is {task.attempt_count}"
                 )
         elif task.status in {"queued", "retry", "pending"}:
             expected_attempt = task.attempt_count + 1
