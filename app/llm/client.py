@@ -3,7 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 import logging
 
-from openai import APITimeoutError, OpenAI
+try:
+    from openai import APITimeoutError, OpenAI
+except ModuleNotFoundError:  # pragma: no cover
+    OpenAI = None
+
+    class APITimeoutError(Exception):
+        pass
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from app.config import Settings, get_settings
@@ -84,6 +90,8 @@ class AzureExecutiveSummaryClient:
         client: OpenAI | None = None,
     ) -> None:
         resolved_settings = settings or AzureOpenAIClientSettings.from_settings(get_settings())
+        if client is None and OpenAI is None:
+            raise AzureOpenAIConfigurationError("openai package is required for Azure OpenAI execution")
         self.settings = resolved_settings
         self._client = client or OpenAI(
             api_key=resolved_settings.api_key,

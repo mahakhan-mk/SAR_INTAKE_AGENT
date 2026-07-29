@@ -1,6 +1,6 @@
 template_id: initial-sar-report
 template_version: "1.0"
-source_dto: ReportPreviewResponseDTO
+source_dto: InitialSarReportContext
 
 context:
   report_title: "Initial Security Assessment Report"
@@ -26,9 +26,9 @@ context:
   business_function_solution_overview: solutionOverview.businessFunctionSolutionOverview
 
   architecture_details: architecture.architectureDetails
-  architecture_document_id: architecture.diagramDocument.documentId
-  architecture_filename: architecture.diagramDocument.filename
-  architecture_content_type: architecture.diagramDocument.contentType
+  architecture_document_id: architecture.documentId
+  architecture_filename: architecture.filename
+  architecture_content_type: architecture.contentType
   architecture_diagram: runtime-resolved-inline-image
 
   hosting_model: hosting.hostingModel

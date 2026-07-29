@@ -6,11 +6,9 @@ import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.assemblers.inherent_risk_assembler import InherentRiskAssembler
 from app.application.models import (
     AnalysisRunCreateResult,
     ComputedQuestionRisk,
-    InherentRiskScreenState,
     StoredAnalysisSnapshot,
     TopRiskDriverState,
     TriagedQuestionLoadResult,
@@ -31,50 +29,9 @@ class _InherentRiskStateBuilder:
         self,
         assessment_repository: AssessmentRepository,
         analysis_repository: AnalysisRepository,
-        assembler: InherentRiskAssembler | None,
     ) -> None:
         self.assessment_repository = assessment_repository
         self.analysis_repository = analysis_repository
-        self.assembler = assembler
-
-    def _build_state_from_snapshot(
-        self,
-        assessment_id: uuid.UUID,
-        snapshot: StoredAnalysisSnapshot,
-    ) -> InherentRiskScreenState:
-        high_risk_count = sum(
-            1
-            for result in snapshot.question_results
-            if result.risk_level in {RiskLevel.HIGH, RiskLevel.CRITICAL}
-        )
-        return InherentRiskScreenState(
-            assessment_id=assessment_id,
-            analysis_run_id=snapshot.analysis_run_id,
-            status=snapshot.status,
-            inherent_risk_level=snapshot.inherent_risk_level,
-            high_risk_question_count=high_risk_count,
-            top_risk_drivers=self.derive_top_risk_drivers(snapshot.question_results),
-            executive_summary_status=snapshot.executive_summary_status,
-            executive_summary_text=snapshot.executive_summary_text,
-            executive_summary_generated_at=snapshot.executive_summary_generated_at,
-        )
-
-    def _not_assessed_state(
-        self,
-        assessment_id: uuid.UUID,
-        analysis_run_id: uuid.UUID | None,
-    ) -> InherentRiskScreenState:
-        return InherentRiskScreenState(
-            assessment_id=assessment_id,
-            analysis_run_id=analysis_run_id,
-            status=AnalysisRunStatus.COMPLETED_WITH_LIMITATIONS,
-            inherent_risk_level=RiskLevel.NOT_ASSESSED,
-            high_risk_question_count=0,
-            top_risk_drivers=[],
-            executive_summary_status=ExecutiveSummaryStatus.NOT_GENERATED,
-            executive_summary_text=None,
-            executive_summary_generated_at=None,
-        )
 
     def derive_top_risk_drivers(
         self,
@@ -98,19 +55,6 @@ class _InherentRiskStateBuilder:
         ]
 
 
-class InherentRiskQueryService(_InherentRiskStateBuilder):
-    async def get_inherent_risk_screen(self, session: AsyncSession, assessment_id: uuid.UUID):
-        assessment = await self.assessment_repository.get_assessment(session, assessment_id)
-        if assessment is None:
-            raise AssessmentNotFoundError()
-
-        snapshot = await self.analysis_repository.get_latest_completed_snapshot(session, assessment_id)
-        if snapshot is None:
-            return self.assembler.to_dto(self._not_assessed_state(assessment_id, analysis_run_id=None))
-
-        return self.assembler.to_dto(self._build_state_from_snapshot(assessment_id, snapshot))
-
-
 class InherentRiskExecutionService(_InherentRiskStateBuilder):
     def __init__(
         self,
@@ -121,7 +65,6 @@ class InherentRiskExecutionService(_InherentRiskStateBuilder):
         super().__init__(
             assessment_repository=assessment_repository,
             analysis_repository=analysis_repository,
-            assembler=None,
         )
         self.scoring_policy = scoring_policy
 

@@ -78,57 +78,6 @@ class TopRiskDriverState:
 
 
 @dataclass(frozen=True)
-class InherentRiskScreenState:
-    assessment_id: uuid.UUID
-    analysis_run_id: uuid.UUID | None
-    status: AnalysisRunStatus
-    inherent_risk_level: RiskLevel
-    high_risk_question_count: int
-    top_risk_drivers: list[TopRiskDriverState]
-    executive_summary_status: ExecutiveSummaryStatus
-    executive_summary_text: str | None
-    executive_summary_generated_at: datetime | None
-
-
-@dataclass(frozen=True)
-class InherentRiskValue:
-    level: RiskLevel
-    label: str
-    highRiskQuestionCount: int
-    sourceText: str
-
-
-@dataclass(frozen=True)
-class InherentRiskTopRiskDriver:
-    domain: str
-    level: RiskLevel
-
-
-@dataclass(frozen=True)
-class InherentRiskExecutiveSummary:
-    text: str | None
-    status: ExecutiveSummaryStatus
-    generatedAt: datetime | None
-
-
-@dataclass(frozen=True)
-class InherentRiskLinks:
-    aiAnalysis: str
-    reportPreview: str
-
-
-@dataclass(frozen=True)
-class InherentRiskResponse:
-    assessmentId: UUID
-    analysisRunId: UUID | None
-    status: AnalysisRunStatus
-    inherentRisk: InherentRiskValue
-    topRiskDrivers: list[InherentRiskTopRiskDriver]
-    executiveSummary: InherentRiskExecutiveSummary
-    links: InherentRiskLinks
-
-
-@dataclass(frozen=True)
 class AnalysisRunCreateResult:
     analysisRunId: UUID | str
     status: AnalysisRunStatus
@@ -146,92 +95,6 @@ class ExecutiveSummaryGenerateResult:
     assessmentId: UUID
     analysisRunId: UUID
     executiveSummary: ExecutiveSummaryGenerateEnvelope
-
-
-@dataclass(frozen=True)
-class AIAnalysisRunSummary:
-    analysisRunId: UUID | None
-    status: AnalysisRunStatus | None
-    createdAt: datetime | None
-
-
-@dataclass(frozen=True)
-class AIAnalysisQuestionRow:
-    questionId: UUID
-    questionNumber: str
-    questionText: str
-    domain: str
-    selectedOptionId: UUID | None
-    answerValue: str | None
-    riskBand: RiskLevel | None
-    riskScore: float | None
-    riskSignal: str | None
-    whyItMatters: str | None
-    aiExplanation: str | None
-    confidence: float | None
-    reviewerRemarks: str | None
-
-
-@dataclass(frozen=True)
-class AIAnalysisResult:
-    assessmentId: UUID
-    latestAnalysisRun: AIAnalysisRunSummary
-    questions: list[AIAnalysisQuestionRow]
-
-
-@dataclass(frozen=True)
-class IntakeHeader:
-    technologyName: str | None
-    sourceSystem: str | None
-    questionnaireVersion: str | None
-
-
-@dataclass(frozen=True)
-class IntakeQuestion:
-    questionId: UUID
-    questionCode: str
-    label: str
-    answer: str | None
-    responseType: str
-    required: bool
-    riskDomain: str
-
-
-@dataclass(frozen=True)
-class IntakeSection:
-    code: str
-    title: str
-    questions: list[IntakeQuestion]
-
-
-@dataclass(frozen=True)
-class IntakeTriageQuestion:
-    questionId: UUID
-    questionCode: str
-    label: str
-    answer: str | None
-
-
-@dataclass(frozen=True)
-class IntakeOverviewResult:
-    assessmentId: UUID
-    header: IntakeHeader
-    sections: list[IntakeSection]
-    triage: list[IntakeTriageQuestion]
-
-
-@dataclass(frozen=True)
-class IntakeQuestionUpdateCommand:
-    selected_option_id: UUID | None
-    answer_value: str | None
-    fields_set: frozenset[str]
-
-
-@dataclass(frozen=True)
-class IntakeQuestionUpdateResult:
-    questionId: UUID
-    selectedOptionId: UUID | None
-    answerValue: str | None
 
 
 @dataclass(frozen=True)
@@ -254,74 +117,19 @@ class DocumentChecklistReadState:
 
 
 @dataclass(frozen=True)
-class DocumentChecklistItemResponse:
-    item_id: UUID
-    document_type: str
-    item_order: int
-    base_verdict: str
-    effective_verdict: str
-    detected_file_status: str
-    detected_document_id: UUID | None
-    reviewer_verdict: str | None
-    reviewer_reason: str | None
-    vendor_certification_automatic_status: str | None
-    vendor_certification_analyst_status: str | None
-    vendor_certification_effective_status: str | None
-
-
-@dataclass(frozen=True)
-class DocumentChecklistResponse:
-    run_id: UUID
-    assessment_id: UUID
-    status: str
-    summary_text: str | None
-    summary_status: str
-    limitations: list[object]
-    created_at: datetime
-    items: list[DocumentChecklistItemResponse]
-
-
-@dataclass(frozen=True)
-class AssessmentDocumentResponse:
-    document_id: UUID
-    assessment_id: UUID
-    original_filename: str
-    content_type: str
-    file_size_bytes: int
-    sha256: str
-    system_document_type: str
-    upload_source: str
-    uploaded_by: str | None
-    created_at: datetime
-    deleted_at: datetime | None
-
-
-@dataclass(frozen=True)
-class AssessmentDocumentListResponse:
-    documents: list[AssessmentDocumentResponse]
-
-
-@dataclass(frozen=True)
-class DocumentClassificationReviewResponse:
-    review_id: UUID
-    document_id: UUID
-    assessment_id: UUID
-    document_type: str
-    reason: str
-    reviewed_by: str | None
-    created_at: datetime
-    effective_document_type: str
-
-
-@dataclass(frozen=True)
-class ReportPreviewAssessment:
+class InitialSarReportAssessment:
     technologyName: str | None = None
+    vendorName: str | None = None
+    productName: str | None = None
+    requestedBy: str | None = None
+    createdAt: datetime | None = None
     sourceSystem: str | None = None
     questionnaireVersion: str | None = None
 
 
 @dataclass(frozen=True)
-class ReportPreviewRiskAssessment:
+class InitialSarReportRiskAssessment:
+    analysisRunId: UUID | None = None
     inherentRiskLevel: str | None = None
     executiveSummary: str | None = None
     status: str | None = None
@@ -329,19 +137,19 @@ class ReportPreviewRiskAssessment:
 
 
 @dataclass(frozen=True)
-class ReportPreviewBusinessContactDetails:
+class InitialSarReportBusinessContactDetails:
     businessUnit: str | None = None
     sponsorBusinessOwner: str | None = None
 
 
 @dataclass(frozen=True)
-class ReportPreviewSolutionOverview:
+class InitialSarReportSolutionOverview:
     launchDate: str | None = None
     businessFunctionSolutionOverview: str | None = None
 
 
 @dataclass(frozen=True)
-class ReportPreviewArchitecture:
+class InitialSarReportArchitecture:
     architectureDetails: str | None = None
     documentId: str | None = None
     filename: str | None = None
@@ -349,39 +157,40 @@ class ReportPreviewArchitecture:
 
 
 @dataclass(frozen=True)
-class ReportPreviewHosting:
+class InitialSarReportHosting:
     hostingModel: str | None = None
     hostedBy: str | None = None
     accessedBy: str | None = None
 
 
 @dataclass(frozen=True)
-class ReportPreviewDataHosted:
+class InitialSarReportDataHosted:
     dataResidency: str | None = None
     confidentiality: str | None = None
     integrity: str | None = None
 
 
 @dataclass(frozen=True)
-class ReportPreviewDataFlow:
+class InitialSarReportDataFlow:
     dataFlow: str | None = None
 
 
 @dataclass(frozen=True)
-class ReportPreviewBusinessContinuity:
+class InitialSarReportBusinessContinuity:
     businessContinuityRating: str | None = None
     rpoRto: str | None = None
     backupAndRestore: str | None = None
 
 
 @dataclass(frozen=True)
-class ReportPreviewThirdPartyMeasures:
+class InitialSarReportThirdPartyMeasures:
     thirdPartyAssessment: str | None = None
     sla: str | None = None
 
 
 @dataclass(frozen=True)
-class ReportPreviewDocumentChecklist:
+class InitialSarReportDocumentChecklist:
+    runId: UUID | None = None
     summary: str | None = None
     status: str | None = None
     items: list[dict[str, object]] = field(default_factory=list)
@@ -389,24 +198,26 @@ class ReportPreviewDocumentChecklist:
 
 
 @dataclass(frozen=True)
-class ReportPreviewVendorReputation:
+class InitialSarReportVendorReputation:
+    status: str | None = None
     summary: str | None = None
+    rows: list[dict[str, object]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
-class ReportPreviewResult:
+class InitialSarReportContext:
     assessmentId: UUID
     generatedAt: datetime
-    assessment: ReportPreviewAssessment
-    riskAssessment: ReportPreviewRiskAssessment
-    businessContactDetails: ReportPreviewBusinessContactDetails
-    solutionOverview: ReportPreviewSolutionOverview
-    architecture: ReportPreviewArchitecture
-    hosting: ReportPreviewHosting
-    dataHosted: ReportPreviewDataHosted
-    dataFlow: ReportPreviewDataFlow
-    businessContinuity: ReportPreviewBusinessContinuity
-    thirdPartyMeasures: ReportPreviewThirdPartyMeasures
-    documentChecklist: ReportPreviewDocumentChecklist
-    vendorReputation: ReportPreviewVendorReputation | None
+    assessment: InitialSarReportAssessment
+    riskAssessment: InitialSarReportRiskAssessment
+    businessContactDetails: InitialSarReportBusinessContactDetails
+    solutionOverview: InitialSarReportSolutionOverview
+    architecture: InitialSarReportArchitecture
+    hosting: InitialSarReportHosting
+    dataHosted: InitialSarReportDataHosted
+    dataFlow: InitialSarReportDataFlow
+    businessContinuity: InitialSarReportBusinessContinuity
+    thirdPartyMeasures: InitialSarReportThirdPartyMeasures
+    documentChecklist: InitialSarReportDocumentChecklist
+    vendorReputation: InitialSarReportVendorReputation | None
     limitations: list[str] | None = None

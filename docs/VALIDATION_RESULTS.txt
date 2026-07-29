@@ -1,0 +1,50 @@
+Assessment Worker Final Validation
+UTC: 2026-07-29T10:31:22Z
+
+1. Compile validation
+PASS: python -m compileall -q app tests
+
+2. Contract and import audit
+PASS: command registry constants match Orchestrator [('assessment.risk.calculate', 'assessment.risk.recalculate', 'assessment.checklist.generate', 'assessment.checklist.finalize', 'assessment.report.generate', 'assessment.report.regenerate')]
+PASS: result event constants match Orchestrator [('assessment.risk.completed', 'assessment.risk.failed', 'assessment.checklist.generated', 'assessment.checklist.completed', 'assessment.checklist.incomplete', 'assessment.checklist.failed', 'assessment.report.completed', 'assessment.report.failed')]
+PASS: result payload field contracts match Orchestrator
+PASS: result required payload contracts match Orchestrator
+PASS: MessageEnvelope source matches Orchestrator exactly
+PASS: topology constant SAR_EVENTS_EXCHANGE_NAME ['sar.events']
+PASS: topology constant SAR_COMMANDS_EXCHANGE_NAME ['sar.commands']
+PASS: topology constant SAR_RETRY_EXCHANGE_NAME ['sar.retry']
+PASS: topology constant SAR_DLX_EXCHANGE_NAME ['sar.dlx']
+PASS: topology constant ASSESSMENT_WORKFLOW_QUEUE_NAME ['assessment.workflow.q']
+PASS: topology constant ASSESSMENT_WORKFLOW_RETRY_QUEUE_NAME ['assessment.workflow.retry.q']
+PASS: topology constant ASSESSMENT_WORKFLOW_DLQ_NAME ['assessment.workflow.dlq']
+PASS: topology constant ASSESSMENT_WORKFLOW_DLQ_ROUTING_KEY ['assessment.workflow.dlq']
+PASS: topology constant ASSESSMENT_DOCUMENTS_QUEUE_NAME ['assessment.documents.q']
+PASS: topology constant ASSESSMENT_DOCUMENTS_RETRY_QUEUE_NAME ['assessment.documents.retry.q']
+PASS: topology constant ASSESSMENT_DOCUMENTS_DLQ_NAME ['assessment.documents.dlq']
+PASS: topology constant ASSESSMENT_DOCUMENTS_DLQ_ROUTING_KEY ['assessment.documents.dlq']
+PASS: workflow queue bindings match
+PASS: documents queue bindings match
+PASS: internal import audit
+
+3. Import smoke test
+PASS: worker runtime modules import successfully
+
+4. Test suite
+...............                                                          [100%]
+15 passed in 0.73s
+
+5. Declared dependency manifests
+PASS: requirements.txt is present and non-empty
+PASS: requirements-dev.txt is present and non-empty
+
+6. Forbidden runtime and schema checks
+PASS: no FastAPI runtime or router wiring remains
+PASS: no create_all/drop_all calls
+PASS: no invented event names
+PASS: ORM schema is not hardcoded to kpmg_sar
+PASS: no forbidden report table mapping remains
+PASS: singular initial_sar_report mapping present
+
+7. Repository hygiene note
+INFO: generated __pycache__ directories after validation: 11, excluded from deliverable
+PASS: validation completed

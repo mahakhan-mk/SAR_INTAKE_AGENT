@@ -1,0 +1,1 @@
+"""Headless assessment worker runtime."""

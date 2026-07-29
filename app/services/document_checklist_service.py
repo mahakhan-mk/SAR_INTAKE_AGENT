@@ -11,11 +11,16 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.models import DocumentChecklistItemReadState, DocumentChecklistReadState
-from app.domain.errors import DocumentChecklistItemNotFoundError, DocumentChecklistRunNotFoundError
+from app.domain.errors import DocumentChecklistRunNotFoundError
 from app.llm.client import AzureExecutiveSummaryClient
 from app.llm.executive_summary import ExecutiveSummaryPromptLoader
 from app.models.database import DocumentChecklistItem, DocumentChecklistRun
-from app.models.enums import ChecklistVerdict, DocumentChecklistSummaryStatus, DocumentType
+from app.models.enums import (
+    ChecklistVerdict,
+    DocumentChecklistRunStatus,
+    DocumentChecklistSummaryStatus,
+    DocumentType,
+)
 from app.repositories.document_checklist_repository import (
     ChecklistItemInput,
     DocumentChecklistRepository,
@@ -64,11 +69,14 @@ class _DocumentChecklistReadStateBuilder:
         session: AsyncSession,
         assessment_id: UUID,
         run_record,
+        reviews_by_type: dict[str, object] | None = None,
     ) -> DocumentChecklistReadState:
-        latest_reviews = await self.checklist_repository.list_latest_item_reviews_by_assessment(
-            session,
-            assessment_id,
-        )
+        latest_reviews = reviews_by_type
+        if latest_reviews is None:
+            latest_reviews = await self.checklist_repository.list_latest_item_reviews_by_assessment(
+                session,
+                assessment_id,
+            )
         snapshot_by_type = {
             str(item.get("documentType")): item
             for item in run_record.run.input_snapshot.get("items", [])
@@ -147,105 +155,6 @@ class _DocumentChecklistReadStateBuilder:
     @staticmethod
     def _optional_str(value: object) -> str | None:
         return str(value) if value is not None else None
-
-
-class DocumentChecklistQueryService(_DocumentChecklistReadStateBuilder):
-    async def get_checklist(
-        self,
-        session: AsyncSession,
-        assessment_id: UUID | str,
-    ) -> DocumentChecklistReadState:
-        normalized_assessment_id = self._coerce_uuid(assessment_id)
-        run_record = await self.checklist_repository.get_latest_checklist_run_with_items(
-            session,
-            normalized_assessment_id,
-        )
-        if run_record is None:
-            raise DocumentChecklistRunNotFoundError()
-        return await self._build_read_state(session, normalized_assessment_id, run_record)
-
-    async def get_latest_checklist_run(
-        self,
-        session: AsyncSession,
-        assessment_id: UUID | str,
-    ) -> DocumentChecklistReadState | None:
-        try:
-            return await self.get_checklist(session, assessment_id)
-        except DocumentChecklistRunNotFoundError:
-            return None
-
-    async def get_checklist_run(
-        self,
-        session: AsyncSession,
-        *,
-        assessment_id: UUID | str,
-        run_id: UUID | str,
-    ) -> DocumentChecklistReadState | None:
-        normalized_assessment_id = self._coerce_uuid(assessment_id)
-        run_record = await self.checklist_repository.get_checklist_run_with_items(
-            session,
-            assessment_id=normalized_assessment_id,
-            run_id=run_id,
-        )
-        if run_record is None:
-            return None
-        return await self._build_read_state(session, normalized_assessment_id, run_record)
-
-
-class DocumentChecklistReviewService(_DocumentChecklistReadStateBuilder):
-    async def apply_reviewer_override(
-        self,
-        session: AsyncSession,
-        *,
-        assessment_id: UUID | str,
-        item_id: UUID | str,
-        reviewer_verdict: ChecklistVerdict | str | None,
-        reason: str | None = None,
-        reviewed_by: str | None = None,
-    ) -> DocumentChecklistItemReadState:
-        normalized_assessment_id = self._coerce_uuid(assessment_id)
-        item_record = await self.checklist_repository.get_checklist_item_for_assessment(
-            session,
-            assessment_id=normalized_assessment_id,
-            item_id=item_id,
-        )
-        if item_record is None:
-            raise DocumentChecklistItemNotFoundError()
-
-        await self.checklist_repository.append_checklist_verdict_review(
-            session,
-            assessment_id=normalized_assessment_id,
-            source_item_id=item_record.item.id,
-            document_type=item_record.item.document_type,
-            reviewer_verdict=reviewer_verdict,
-            reason=reason,
-            reviewed_by=reviewed_by,
-        )
-        return await self._build_item_read_state(
-            session,
-            assessment_id=normalized_assessment_id,
-            run=item_record.run,
-            item=item_record.item,
-        )
-
-    async def append_item_review(
-        self,
-        session: AsyncSession,
-        *,
-        assessment_id: UUID | str,
-        item_id: UUID | str,
-        reviewer_verdict: ChecklistVerdict | str | None,
-        reason: str | None = None,
-        reviewed_by: str | None = None,
-    ) -> DocumentChecklistItemReadState:
-        return await self.apply_reviewer_override(
-            session,
-            assessment_id=assessment_id,
-            item_id=item_id,
-            reviewer_verdict=reviewer_verdict,
-            reason=reason,
-            reviewed_by=reviewed_by,
-        )
 
 
 class DocumentChecklistExecutionService(_DocumentChecklistReadStateBuilder):
@@ -375,7 +284,73 @@ class DocumentChecklistExecutionService(_DocumentChecklistReadStateBuilder):
         )
         if run_record is None:
             raise DocumentChecklistRunNotFoundError()
-        return await self._build_read_state(session, normalized_assessment_id, run_record)
+
+        current_reviews = await self.checklist_repository.list_latest_item_reviews_for_run_items(
+            session,
+            assessment_id=normalized_assessment_id,
+            item_ids=[item.id for item in run_record.items],
+        )
+        state = await self._build_read_state(
+            session,
+            normalized_assessment_id,
+            run_record,
+            reviews_by_type=current_reviews,
+        )
+        required_types = {item.document_type for item in run_record.items}
+        saved_decision_types = {
+            document_type
+            for document_type, review in current_reviews.items()
+            if review.reviewer_verdict is not None
+        }
+        missing_review_types = sorted(required_types - saved_decision_types)
+        missing_required_documents = sorted(
+            item.item.document_type
+            for item in state.items
+            if item.effective_verdict == ChecklistVerdict.REQUIRED.value
+            and item.detected_document_id is None
+        )
+
+        if missing_review_types or missing_required_documents:
+            reasons: list[str] = []
+            if missing_review_types:
+                reasons.append(
+                    "missing saved reviewer decisions for " + ", ".join(missing_review_types)
+                )
+            if missing_required_documents:
+                reasons.append(
+                    "required documents are missing for " + ", ".join(missing_required_documents)
+                )
+            await self.checklist_repository.update_run_status(
+                session,
+                run=run_record.run,
+                status=DocumentChecklistRunStatus.INCOMPLETE,
+                error_summary="; ".join(reasons),
+            )
+            return await self._build_read_state(
+                session,
+                normalized_assessment_id,
+                run_record,
+                reviews_by_type=current_reviews,
+            )
+
+        completed_status = (
+            DocumentChecklistRunStatus.COMPLETED_WITH_LIMITATIONS
+            if run_record.run.limitations
+            or run_record.run.summary_status == DocumentChecklistSummaryStatus.FAILED.value
+            else DocumentChecklistRunStatus.COMPLETED
+        )
+        await self.checklist_repository.update_run_status(
+            session,
+            run=run_record.run,
+            status=completed_status,
+            error_summary=None,
+        )
+        return await self._build_read_state(
+            session,
+            normalized_assessment_id,
+            run_record,
+            reviews_by_type=current_reviews,
+        )
 
     async def _generate_summary(
         self,

@@ -93,9 +93,8 @@ def build_initial_sar_report_storage_key(
     assessment_id: UUID,
     filename: str,
 ) -> str:
-    del assessment_id
     safe_filename = make_safe_document_filename(filename)
-    return f"local-dev/reports/{report_id}/{safe_filename}"
+    return f"assessments/{assessment_id}/reports/{report_id}/{safe_filename}"
 
 
 class InMemoryInitialSarReportStorage:

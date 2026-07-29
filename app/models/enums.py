@@ -70,6 +70,9 @@ class DocumentChecklistRunStatus(StrEnum):
     DRAFT = "draft"
     DRAFT_WITH_LIMITATIONS = "draft_with_limitations"
     SUBMITTED = "submitted"
+    COMPLETED = "completed"
+    COMPLETED_WITH_LIMITATIONS = "completed_with_limitations"
+    INCOMPLETE = "incomplete"
     FAILED = "failed"
 
 

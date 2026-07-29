@@ -2,7 +2,7 @@
   "templateId": "initial-sar-report",
   "templateVersion": "1.0",
   "renderer": "docxtpl",
-  "sourceDto": "ReportPreviewResponseDTO",
+  "sourceDto": "InitialSarReportContext",
   "supportedOutputFormats": ["docx"],
   "requiredContextKeys": [
     "report_title",

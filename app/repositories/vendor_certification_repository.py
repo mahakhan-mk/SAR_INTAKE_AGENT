@@ -3,32 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from uuid import UUID
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, Table, Text, select
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, Table, Text, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.database import Base, JSONB_TYPE, UUID_TYPE
+from app.models.database import Base, JSONB_TYPE, UUID_TYPE, VendorReputationJob
 
 
-vendor_reputation_jobs = Table(
-    "vendor_reputation_jobs",
-    Base.metadata,
-    Column("id", UUID_TYPE, primary_key=True),
-    Column("sar_id", Text, nullable=True),
-    Column("vendor_name", Text, nullable=False),
-    Column("product_name", Text, nullable=True),
-    Column("pipeline_profile", Text, nullable=False),
-    Column("status", Text, nullable=False),
-    Column("requires_analyst_review", Boolean, nullable=False),
-    Column("requested_by", Text, nullable=True),
-    Column("created_at", DateTime(timezone=True), nullable=False),
-    Column("started_at", DateTime(timezone=True), nullable=True),
-    Column("completed_at", DateTime(timezone=True), nullable=True),
-    Column("updated_at", DateTime(timezone=True), nullable=True),
-    Column("error_summary", Text, nullable=True),
-    Column("limitations", JSONB_TYPE, nullable=False),
-    Column("metadata", JSONB_TYPE, nullable=False),
-    Column("assessment_id", UUID_TYPE, ForeignKey("sar_assessments.id", ondelete="SET NULL"), nullable=True),
-)
+vendor_reputation_jobs = VendorReputationJob.__table__
 
 vendor_reputation_hitl_reviews = Table(
     "vendor_reputation_hitl_reviews",

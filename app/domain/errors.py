@@ -11,29 +11,5 @@ class AnalysisRunStatusConflictError(Exception):
         self.status = status
 
 
-class IntakeQuestionNotFoundError(LookupError):
-    pass
-
-
-class IntakeQuestionHiddenError(LookupError):
-    pass
-
-
-class IntakeQuestionOptionError(ValueError):
-    pass
-
-
-class AssessmentDocumentNotFoundError(LookupError):
-    pass
-
-
-class DuplicateAssessmentDocumentError(ValueError):
-    pass
-
-
-class DocumentChecklistItemNotFoundError(LookupError):
-    pass
-
-
 class DocumentChecklistRunNotFoundError(LookupError):
     pass

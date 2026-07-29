@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import logging
 import uuid
 from uuid import UUID
@@ -11,7 +12,7 @@ from app.repositories.document_repository import DocumentRepository
 from app.repositories.report_repository import InitialSarReportRepository
 from app.services.initial_sar_report_renderer import InitialSarReportRenderer, RenderedInitialSarReport
 from app.services.initial_sar_report_storage import InitialSarReportStorage, StoredInitialSarReport
-from app.services.report_service import ReportPreviewService
+from app.services.report_context_service import InitialSarReportContextService
 
 logger = logging.getLogger(__name__)
 _PENDING_UPLOADS_KEY = "pending_initial_sar_report_uploads"
@@ -31,14 +32,14 @@ class InitialSarReportGenerationService:
     def __init__(
         self,
         *,
-        preview_service: ReportPreviewService,
+        context_service: InitialSarReportContextService,
         renderer: InitialSarReportRenderer,
         storage: InitialSarReportStorage,
         repository: InitialSarReportRepository,
         document_repository: DocumentRepository | None = None,
         document_storage: object | None = None,
     ) -> None:
-        self.preview_service = preview_service
+        self.context_service = context_service
         self.renderer = renderer
         self.storage = storage
         self.repository = repository
@@ -51,13 +52,20 @@ class InitialSarReportGenerationService:
         *,
         assessment_id: UUID,
         source_workflow_version: int,
+        regenerate: bool = False,
     ) -> GeneratedInitialSarReportResult:
-        preview = await self.preview_service.get_report_preview(session, assessment_id)
+        preview = await self.context_service.build_context(session, assessment_id)
         architecture_image_bytes = await self._load_architecture_image_bytes(session, assessment_id, preview)
         rendered_report = self.renderer.render(preview, architecture_image_bytes=architecture_image_bytes)
 
         report_id = uuid.uuid4()
         report_version = await self.repository.get_next_report_version(session, assessment_id)
+        if regenerate:
+            await self.repository.mark_reports_stale(
+                session,
+                assessment_id,
+                datetime.now(timezone.utc),
+            )
         stored_report = await self.storage.store_report(
             report_id=report_id,
             assessment_id=assessment_id,
@@ -93,6 +101,9 @@ class InitialSarReportGenerationService:
             file_size_bytes=rendered_report.file_size_bytes,
             sha256=rendered_report.sha256,
         )
+
+    def finalize_successful_generation(self, session: AsyncSession, report_id: UUID) -> None:
+        self._pop_pending_upload(session, report_id)
 
     async def compensate_failed_generation(self, session: AsyncSession, report_id: UUID) -> None:
         stored_report = self._pop_pending_upload(session, report_id)

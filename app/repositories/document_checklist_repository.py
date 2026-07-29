@@ -141,6 +141,19 @@ class DocumentChecklistRepository:
             raise ValueError(f"Checklist run {run.id} must have exactly 3 items.")
         return DocumentChecklistRunRecord(run=run, items=list(items))
 
+    async def update_run_status(
+        self,
+        session: AsyncSession,
+        *,
+        run: DocumentChecklistRun,
+        status: DocumentChecklistRunStatus | str,
+        error_summary: str | None = None,
+    ) -> DocumentChecklistRun:
+        run.status = self._coerce_run_status(status)
+        run.error_summary = error_summary
+        await session.flush()
+        return run
+
     async def update_run_summary(
         self,
         session: AsyncSession,
@@ -257,29 +270,37 @@ class DocumentChecklistRepository:
         ).scalars().all()
         return {review.document_type: review for review in reviews}
 
-    async def list_latest_non_null_item_reviews_by_assessment(
+    async def list_latest_item_reviews_for_run_items(
         self,
         session: AsyncSession,
+        *,
         assessment_id: UUID | str,
+        item_ids: Sequence[UUID | str],
     ) -> dict[str, DocumentChecklistItemReview]:
+        normalized_item_ids = [self._coerce_uuid(item_id) for item_id in item_ids]
+        if not normalized_item_ids:
+            return {}
+
         ranked_reviews = (
             select(
                 DocumentChecklistItemReview.id.label("review_id"),
                 DocumentChecklistItemReview.document_type.label("document_type"),
                 func.row_number()
                 .over(
-                    partition_by=DocumentChecklistItemReview.document_type,
-                    order_by=(DocumentChecklistItemReview.created_at.desc(), DocumentChecklistItemReview.id.desc()),
+                    partition_by=DocumentChecklistItemReview.source_item_id,
+                    order_by=(
+                        DocumentChecklistItemReview.created_at.desc(),
+                        DocumentChecklistItemReview.id.desc(),
+                    ),
                 )
                 .label("review_rank"),
             )
             .where(
                 DocumentChecklistItemReview.assessment_id == self._coerce_uuid(assessment_id),
-                DocumentChecklistItemReview.reviewer_verdict.is_not(None),
+                DocumentChecklistItemReview.source_item_id.in_(normalized_item_ids),
             )
             .subquery()
         )
-
         reviews = (
             await session.execute(
                 select(DocumentChecklistItemReview)
