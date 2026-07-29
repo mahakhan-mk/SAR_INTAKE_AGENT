@@ -121,7 +121,7 @@ class WorkflowTaskExecutionRepository:
         )
 
         if task.status in {"succeeded", "failed", "cancelled"}:
-            return _claimed(task)
+            raise ValueError(f"task {task.id} cannot be claimed from terminal status {task.status}")
         if attempt < 1 or attempt > task.max_attempts:
             raise ValueError(f"attempt {attempt} is outside task retry policy")
 
@@ -132,15 +132,21 @@ class WorkflowTaskExecutionRepository:
                 raise ValueError(
                     f"{relation} attempt {attempt}; current attempt is {task.attempt_count}"
                 )
+            lease_expires_at = _as_utc(task.lease_expires_at)
             lease_is_active = (
-                task.lease_expires_at is not None
-                and task.lease_expires_at > now
+                lease_expires_at is not None
+                and lease_expires_at > now
                 and task.lease_owner != lease_owner
             )
             if lease_is_active:
                 raise TaskLeaseUnavailable(
                     f"task {task.id} is leased by {task.lease_owner} until "
-                    f"{task.lease_expires_at.isoformat()}"
+                    f"{lease_expires_at.isoformat()}"
+                )
+            if attempt != task.attempt_count:
+                relation = "stale" if attempt < task.attempt_count else "future"
+                raise ValueError(
+                    f"{relation} attempt {attempt}; current attempt is {task.attempt_count}"
                 )
         elif task.status in {"queued", "retry", "pending"}:
             expected_attempt = task.attempt_count + 1
@@ -161,30 +167,35 @@ class WorkflowTaskExecutionRepository:
         await session.flush()
         return _claimed(task)
 
-    async def lock_running_execution(
+    async def renew_lease(
         self,
         session: AsyncSession,
         *,
         task_id: UUID,
         attempt: int,
         lease_owner: str,
-    ) -> ClaimedTask:
-        task = await self._get_for_update(session, task_id)
-        if task.status in {"succeeded", "failed", "cancelled"}:
-            return _claimed(task)
-        if task.status != "running":
-            raise ValueError(
-                f"task {task.id} must be running before execution; current status is {task.status}"
+        lease_seconds: int,
+    ) -> datetime:
+        now = datetime.now(UTC)
+        renewed_until = now + timedelta(seconds=lease_seconds)
+        result = await session.execute(
+            update(WorkflowTask)
+            .where(
+                WorkflowTask.id == task_id,
+                WorkflowTask.status == "running",
+                WorkflowTask.attempt_count == attempt,
+                WorkflowTask.lease_owner == lease_owner,
             )
-        if task.attempt_count != attempt:
-            raise ValueError(
-                f"task {task.id} attempt changed from {attempt} to {task.attempt_count}"
+            .values(
+                lease_expires_at=renewed_until,
+                updated_at=now,
             )
-        if task.lease_owner != lease_owner:
+        )
+        if result.rowcount != 1:
             raise TaskLeaseUnavailable(
-                f"task {task.id} lease owner changed to {task.lease_owner}"
+                f"task {task_id} lease could not be renewed for owner {lease_owner}"
             )
-        return _claimed(task)
+        return renewed_until
 
     async def mark_succeeded(
         self,
@@ -213,7 +224,9 @@ class WorkflowTaskExecutionRepository:
             )
         )
         if result.rowcount != 1:
-            raise ValueError(f"task {task_id} changed before success could be recorded")
+            raise TaskLeaseUnavailable(
+                f"task {task_id} lease changed before success could be recorded"
+            )
 
     @staticmethod
     async def _get_for_update(session: AsyncSession, task_id: UUID) -> WorkflowTask:
@@ -458,3 +471,9 @@ def _required(value: str, field_name: str) -> str:
     if not normalized:
         raise ValueError(f"{field_name} must be a non-blank string")
     return normalized
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is None or value.tzinfo is not None:
+        return value
+    return value.replace(tzinfo=UTC)

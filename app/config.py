@@ -32,6 +32,7 @@ class Settings:
     command_prefetch_count: int
     command_retry_limit: int
     command_lease_seconds: int
+    command_lease_heartbeat_seconds: float
     rabbitmq_retry_delay_milliseconds: int
     outbox_batch_size: int
     outbox_max_publish_attempts: int
@@ -52,6 +53,17 @@ def get_settings() -> Settings:
     database_url = _required_env("DATABASE_URL")
     database_schema = _required_env(DATABASE_SCHEMA_ENV_VAR)
     rabbitmq_url = _required_env("RABBITMQ_URL")
+    command_lease_seconds = _positive_int("ASSESSMENT_COMMAND_LEASE_SECONDS", 1800)
+    default_heartbeat_seconds = min(command_lease_seconds / 3, 30.0)
+    command_lease_heartbeat_seconds = _positive_float(
+        "ASSESSMENT_COMMAND_LEASE_HEARTBEAT_SECONDS",
+        default_heartbeat_seconds,
+    )
+    if command_lease_heartbeat_seconds >= command_lease_seconds:
+        raise SettingsError(
+            "ASSESSMENT_COMMAND_LEASE_HEARTBEAT_SECONDS must be less than "
+            "ASSESSMENT_COMMAND_LEASE_SECONDS"
+        )
     return Settings(
         database_url=database_url,
         database_schema=database_schema,
@@ -61,7 +73,8 @@ def get_settings() -> Settings:
         consumer_name=os.getenv("ASSESSMENT_CONSUMER_NAME", "assessment-worker"),
         command_prefetch_count=_positive_int("ASSESSMENT_COMMAND_PREFETCH", 1),
         command_retry_limit=_non_negative_int("ASSESSMENT_COMMAND_RETRY_LIMIT", 3),
-        command_lease_seconds=_positive_int("ASSESSMENT_COMMAND_LEASE_SECONDS", 1800),
+        command_lease_seconds=command_lease_seconds,
+        command_lease_heartbeat_seconds=command_lease_heartbeat_seconds,
         rabbitmq_retry_delay_milliseconds=_positive_int("RABBITMQ_RETRY_DELAY_MS", 30000),
         outbox_batch_size=_positive_int("OUTBOX_BATCH_SIZE", 25),
         outbox_max_publish_attempts=_positive_int("OUTBOX_MAX_PUBLISH_ATTEMPTS", 10),
@@ -80,7 +93,7 @@ def get_settings() -> Settings:
 
 def _default_worker_instance_id() -> str:
     hostname = socket.gethostname().strip() or "unknown-host"
-    return f"assessment-worker-{hostname}-{os.getpid()}-{uuid4().hex[:12]}"
+    return f"{hostname}:{os.getpid()}:{uuid4().hex}"
 
 
 def _required_env(name: str) -> str:

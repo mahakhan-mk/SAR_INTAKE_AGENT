@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+from dataclasses import dataclass
 import logging
 
 from sqlalchemy.exc import SQLAlchemyError
@@ -34,6 +36,22 @@ class NonRetryableCommandFailure(RuntimeError):
     pass
 
 
+@dataclass(slots=True)
+class _LeaseExecution:
+    stop_event: asyncio.Event
+    lost_event: asyncio.Event
+    handler_task: asyncio.Task[CommandExecutionResult] | None = None
+    lost_reason: str | None = None
+
+    def mark_lost(self, reason: str) -> None:
+        if self.lost_event.is_set():
+            return
+        self.lost_reason = reason
+        self.lost_event.set()
+        if self.handler_task is not None and not self.handler_task.done():
+            self.handler_task.cancel()
+
+
 class CommandProcessor:
     def __init__(
         self,
@@ -61,53 +79,49 @@ class CommandProcessor:
         except LookupError as exc:
             raise NonRetryableCommandFailure(str(exc)) from exc
 
+        claimed = await self._claim_task(envelope)
+        if not claimed:
+            return False
+
+        lease_execution = _LeaseExecution(
+            stop_event=asyncio.Event(),
+            lost_event=asyncio.Event(),
+        )
+        heartbeat_task = asyncio.create_task(
+            self._renew_lease_until_stopped(envelope, lease_execution),
+            name=f"task-lease-heartbeat-{envelope.task_id}",
+        )
+
         session = self._session_factory()
         execution_result: CommandExecutionResult | None = None
         committed = False
         try:
             async with session.begin():
-                if await self._processed.is_processed(
-                    session,
-                    consumer_name=self._settings.consumer_name,
-                    message_id=envelope.message_id,
-                ):
-                    logger.info(
-                        "duplicate_command_ignored message_id=%s assessment_id=%s "
-                        "workflow_id=%s task_id=%s attempt=%s",
-                        envelope.message_id,
-                        envelope.assessment_id,
-                        envelope.workflow_id,
-                        envelope.task_id,
-                        envelope.attempt,
-                    )
-                    return False
-
-                task = await self._tasks.claim(
-                    session,
-                    task_id=envelope.task_id,
-                    workflow_id=envelope.workflow_id,
-                    task_type=envelope.message_type,
-                    expected_workflow_version=envelope.expected_workflow_version,
-                    attempt=envelope.attempt,
-                    input_payload=dict(envelope.payload),
-                    lease_owner=self._settings.worker_instance_id,
-                    lease_seconds=self._settings.command_lease_seconds,
-                )
-                if task.status in {"succeeded", "failed", "cancelled"}:
-                    await self._processed.mark_processed(
-                        session,
-                        consumer_name=self._settings.consumer_name,
-                        message_id=envelope.message_id,
-                    )
-                    return False
-
+                self._raise_if_lease_lost(envelope, lease_execution)
                 try:
                     async with session.begin_nested():
-                        execution_result = await handler(session, envelope)
+                        execution_result = await self._execute_handler(
+                            handler,
+                            session,
+                            envelope,
+                            lease_execution,
+                        )
+                    self._raise_if_lease_lost(envelope, lease_execution)
                 except SQLAlchemyError:
                     raise
+                except TaskLeaseUnavailable:
+                    raise
                 except Exception as exc:
+                    self._raise_if_lease_lost(envelope, lease_execution)
                     await self._record_handled_failure(session, envelope, exc)
+                    await self._tasks.renew_lease(
+                        session,
+                        task_id=envelope.task_id,
+                        attempt=envelope.attempt,
+                        lease_owner=self._settings.worker_instance_id,
+                        lease_seconds=self._settings.command_lease_seconds,
+                    )
+                    self._raise_if_lease_lost(envelope, lease_execution)
                     logger.exception(
                         "command_execution_failed message_id=%s assessment_id=%s "
                         "workflow_id=%s task_id=%s command=%s attempt=%s retryable=%s",
@@ -121,6 +135,7 @@ class CommandProcessor:
                     )
                     execution_result = None
                 else:
+                    self._raise_if_lease_lost(envelope, lease_execution)
                     await self._tasks.mark_succeeded(
                         session,
                         task_id=envelope.task_id,
@@ -156,6 +171,11 @@ class CommandProcessor:
         except (LookupError, ValueError) as exc:
             raise NonRetryableCommandFailure(str(exc)) from exc
         finally:
+            lease_execution.stop_event.set()
+            try:
+                await heartbeat_task
+            except asyncio.CancelledError:
+                pass
             if execution_result is not None and not committed:
                 await execution_result.rolled_back()
             await session.close()
@@ -185,6 +205,119 @@ class CommandProcessor:
             session,
             consumer_name=self._settings.consumer_name,
             message_id=envelope.message_id,
+        )
+
+    async def _claim_task(self, envelope: MessageEnvelope) -> bool:
+        session = self._session_factory()
+        try:
+            async with session.begin():
+                if await self._processed.is_processed(
+                    session,
+                    consumer_name=self._settings.consumer_name,
+                    message_id=envelope.message_id,
+                ):
+                    logger.info(
+                        "duplicate_command_ignored message_id=%s assessment_id=%s "
+                        "workflow_id=%s task_id=%s attempt=%s",
+                        envelope.message_id,
+                        envelope.assessment_id,
+                        envelope.workflow_id,
+                        envelope.task_id,
+                        envelope.attempt,
+                    )
+                    return False
+
+                await self._tasks.claim(
+                    session,
+                    task_id=envelope.task_id,
+                    workflow_id=envelope.workflow_id,
+                    task_type=envelope.message_type,
+                    expected_workflow_version=envelope.expected_workflow_version,
+                    attempt=envelope.attempt,
+                    input_payload=dict(envelope.payload),
+                    lease_owner=self._settings.worker_instance_id,
+                    lease_seconds=self._settings.command_lease_seconds,
+                )
+            return True
+        finally:
+            await session.close()
+
+    async def _execute_handler(
+        self,
+        handler,
+        session: AsyncSession,
+        envelope: MessageEnvelope,
+        lease_execution: _LeaseExecution,
+    ) -> CommandExecutionResult:
+        task = asyncio.create_task(handler(session, envelope))
+        lease_execution.handler_task = task
+        try:
+            return await task
+        except asyncio.CancelledError as exc:
+            self._raise_if_lease_lost(envelope, lease_execution)
+            raise exc
+        finally:
+            if lease_execution.handler_task is task:
+                lease_execution.handler_task = None
+
+    async def _renew_lease_until_stopped(
+        self,
+        envelope: MessageEnvelope,
+        lease_execution: _LeaseExecution,
+    ) -> None:
+        while not lease_execution.stop_event.is_set() and not lease_execution.lost_event.is_set():
+            try:
+                await asyncio.wait_for(
+                    lease_execution.stop_event.wait(),
+                    timeout=self._settings.command_lease_heartbeat_seconds,
+                )
+                return
+            except TimeoutError:
+                pass
+
+            session = self._session_factory()
+            try:
+                async with session.begin():
+                    await self._tasks.renew_lease(
+                        session,
+                        task_id=envelope.task_id,
+                        attempt=envelope.attempt,
+                        lease_owner=self._settings.worker_instance_id,
+                        lease_seconds=self._settings.command_lease_seconds,
+                    )
+            except TaskLeaseUnavailable as exc:
+                logger.warning(
+                    "task_lease_lost message_id=%s workflow_id=%s task_id=%s attempt=%s",
+                    envelope.message_id,
+                    envelope.workflow_id,
+                    envelope.task_id,
+                    envelope.attempt,
+                )
+                lease_execution.mark_lost(str(exc))
+                return
+            except SQLAlchemyError as exc:
+                logger.exception(
+                    "task_lease_renewal_failed message_id=%s workflow_id=%s task_id=%s attempt=%s",
+                    envelope.message_id,
+                    envelope.workflow_id,
+                    envelope.task_id,
+                    envelope.attempt,
+                )
+                lease_execution.mark_lost(str(exc))
+                return
+            finally:
+                await session.close()
+
+    @staticmethod
+    def _raise_if_lease_lost(
+        envelope: MessageEnvelope,
+        lease_execution: _LeaseExecution,
+    ) -> None:
+        if not lease_execution.lost_event.is_set():
+            return
+        reason = lease_execution.lost_reason or "lease lost during execution"
+        raise TaskLeaseUnavailable(
+            f"task {envelope.task_id} lease lost for attempt {envelope.attempt}: {reason}"
         )
 
 
