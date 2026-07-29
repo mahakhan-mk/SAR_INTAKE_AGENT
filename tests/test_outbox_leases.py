@@ -13,7 +13,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.config import DATABASE_SCHEMA_TOKEN
 from app.messaging.outbox_publisher import OutboxPublisher
 from app.models.database import Base, OutboxMessage
-from app.repositories.worker_messaging_repository import OutboxMessageRecord, WorkerOutboxRepository
+from app.repositories.worker_messaging_repository import (
+    ASSESSMENT_WORKER_PRODUCER,
+    OutboxMessageRecord,
+    WorkerOutboxRepository,
+)
 
 
 ASSESSMENT_ID = UUID("11111111-1111-4111-8111-111111111111")
@@ -49,6 +53,9 @@ async def session_factory() -> async_sessionmaker[AsyncSession]:
 async def _insert_outbox_row(
     session_factory: async_sessionmaker[AsyncSession],
     *,
+    producer_component: str = ASSESSMENT_WORKER_PRODUCER,
+    exchange_name: str = "sar.events",
+    message_type: str = "assessment.completed",
     status: str = "pending",
     locked_by: str | None = None,
     lease_expires_at: datetime | None = None,
@@ -61,9 +68,9 @@ async def _insert_outbox_row(
             session.add(
                 OutboxMessage(
                     message_id=message_id,
-                    producer_component="assessment_worker",
-                    exchange_name="sar.events",
-                    message_type="assessment.completed",
+                    producer_component=producer_component,
+                    exchange_name=exchange_name,
+                    message_type=message_type,
                     schema_version=1,
                     assessment_id=ASSESSMENT_ID,
                     workflow_id=WORKFLOW_ID,
@@ -110,6 +117,10 @@ def _normalize_datetime(value: datetime | None) -> datetime | None:
     if value is None or value.tzinfo is not None:
         return value
     return value.replace(tzinfo=UTC)
+
+
+def _past_now() -> datetime:
+    return datetime.now(UTC) - timedelta(seconds=1)
 
 
 class _CommitAwareSession:
@@ -211,6 +222,61 @@ class _FakeConnection:
         return _FakeChannel(self._store)
 
 
+class _RecordingExchange:
+    def __init__(self, sink: "_PublishSink") -> None:
+        self._sink = sink
+
+    async def publish(self, message, *, routing_key: str) -> None:
+        message_id = UUID(message.message_id)
+        if message_id in self._sink.fail_message_ids:
+            raise RuntimeError("publish failed")
+        self._sink.published.append(message_id)
+        self._sink.routing_keys.append(routing_key)
+
+
+class _RecordingChannel:
+    def __init__(self, sink: "_PublishSink") -> None:
+        self._sink = sink
+
+    async def get_exchange(self, exchange_name: str, *, ensure: bool):
+        self._sink.exchange_names.append(exchange_name)
+        assert ensure is True
+        return _RecordingExchange(self._sink)
+
+    async def close(self) -> None:
+        self._sink.closed += 1
+
+
+class _PublishSink:
+    def __init__(self, *, fail_message_ids: set[UUID] | None = None) -> None:
+        self.fail_message_ids = fail_message_ids or set()
+        self.published: list[UUID] = []
+        self.routing_keys: list[str] = []
+        self.exchange_names: list[str] = []
+        self.closed = 0
+
+
+class _RecordingConnection:
+    def __init__(self, sink: _PublishSink) -> None:
+        self._sink = sink
+        self.publisher_confirms: list[bool] = []
+
+    async def channel(self, *, publisher_confirms: bool):
+        self.publisher_confirms.append(publisher_confirms)
+        return _RecordingChannel(self._sink)
+
+
+@pytest.fixture
+def fake_aio_pika(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "app.messaging.outbox_publisher.aio_pika",
+        SimpleNamespace(
+            Message=lambda **kwargs: SimpleNamespace(**kwargs),
+            DeliveryMode=SimpleNamespace(PERSISTENT=2),
+        ),
+    )
+
+
 @pytest.mark.asyncio
 async def test_pending_row_becomes_processing(
     session_factory: async_sessionmaker[AsyncSession],
@@ -231,6 +297,27 @@ async def test_pending_row_becomes_processing(
     assert [record.message_id for record in records] == [message_id]
     stored = await _get_outbox_row(session_factory, message_id)
     assert stored.status == "processing"
+
+
+@pytest.mark.asyncio
+async def test_pending_assessment_worker_row_is_claimable(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    message_id = await _insert_outbox_row(session_factory)
+    repository = WorkerOutboxRepository()
+
+    async with session_factory() as session:
+        records = await repository.claim_publishable(
+            session,
+            limit=1,
+            locked_by="publisher-a",
+            lease_duration=timedelta(seconds=30),
+            now=NOW,
+        )
+        await session.commit()
+
+    assert [record.message_id for record in records] == [message_id]
+    assert all(record.producer_component == ASSESSMENT_WORKER_PRODUCER for record in records)
 
 
 @pytest.mark.asyncio
@@ -288,6 +375,32 @@ async def test_expired_processing_row_can_be_reclaimed(
 
 
 @pytest.mark.asyncio
+async def test_expired_processing_assessment_worker_row_is_reclaimable(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    message_id = await _insert_outbox_row(
+        session_factory,
+        status="processing",
+        locked_by="publisher-a",
+        lease_expires_at=NOW - timedelta(seconds=1),
+    )
+    repository = WorkerOutboxRepository()
+
+    async with session_factory() as session:
+        records = await repository.claim_publishable(
+            session,
+            limit=1,
+            locked_by="publisher-b",
+            lease_duration=timedelta(seconds=30),
+            now=NOW,
+        )
+        await session.commit()
+
+    assert [record.message_id for record in records] == [message_id]
+    assert all(record.producer_component == ASSESSMENT_WORKER_PRODUCER for record in records)
+
+
+@pytest.mark.asyncio
 async def test_active_lease_cannot_be_reclaimed(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
@@ -314,6 +427,70 @@ async def test_active_lease_cannot_be_reclaimed(
     assert stored.status == "processing"
     assert stored.locked_by == "publisher-a"
     assert _normalize_datetime(stored.lease_expires_at) == NOW + timedelta(seconds=1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("producer_component", ["api_gateway", "orchestrator", "vendor_reputation_worker"])
+async def test_foreign_producer_row_is_not_claimed(
+    session_factory: async_sessionmaker[AsyncSession],
+    producer_component: str,
+) -> None:
+    message_id = await _insert_outbox_row(
+        session_factory,
+        producer_component=producer_component,
+    )
+    repository = WorkerOutboxRepository()
+
+    async with session_factory() as session:
+        records = await repository.claim_publishable(
+            session,
+            limit=10,
+            locked_by="publisher-a",
+            lease_duration=timedelta(seconds=30),
+            now=NOW,
+        )
+        await session.commit()
+
+    assert records == []
+    stored = await _get_outbox_row(session_factory, message_id)
+    assert stored.producer_component == producer_component
+    assert stored.status == "pending"
+    assert stored.locked_by is None
+    assert stored.lease_expires_at is None
+
+
+@pytest.mark.asyncio
+async def test_foreign_sar_commands_row_is_not_claimed_or_marked_failed(
+    session_factory: async_sessionmaker[AsyncSession],
+    fake_aio_pika: None,
+) -> None:
+    message_id = await _insert_outbox_row(
+        session_factory,
+        producer_component="orchestrator",
+        exchange_name="sar.commands",
+        message_type="vr.run",
+        available_at=_past_now(),
+    )
+    sink = _PublishSink()
+    publisher = OutboxPublisher(
+        session_factory,
+        _RecordingConnection(sink),
+        _settings(),
+        publisher_id="publisher-a",
+    )
+
+    published = await publisher._publish_batch()
+
+    assert published == 0
+    assert sink.published == []
+    stored = await _get_outbox_row(session_factory, message_id)
+    assert stored.producer_component == "orchestrator"
+    assert stored.exchange_name == "sar.commands"
+    assert stored.status == "pending"
+    assert stored.locked_by is None
+    assert stored.lease_expires_at is None
+    assert stored.publish_attempt_count == 0
+    assert stored.last_error is None
 
 
 @pytest.mark.asyncio
@@ -372,10 +549,164 @@ async def test_wrong_publisher_owner_cannot_mark_failed(
 
 
 @pytest.mark.asyncio
+async def test_only_assessment_worker_rows_are_passed_to_rabbitmq_publication(
+    session_factory: async_sessionmaker[AsyncSession],
+    fake_aio_pika: None,
+) -> None:
+    worker_message_id = await _insert_outbox_row(
+        session_factory,
+        available_at=_past_now(),
+    )
+    foreign_message_id = await _insert_outbox_row(
+        session_factory,
+        producer_component="api_gateway",
+        available_at=_past_now(),
+    )
+    sink = _PublishSink()
+    publisher = OutboxPublisher(
+        session_factory,
+        _RecordingConnection(sink),
+        _settings(),
+        publisher_id="publisher-a",
+    )
+
+    published = await publisher._publish_batch()
+
+    assert published == 1
+    assert sink.published == [worker_message_id]
+    worker_row = await _get_outbox_row(session_factory, worker_message_id)
+    foreign_row = await _get_outbox_row(session_factory, foreign_message_id)
+    assert worker_row.status == "published"
+    assert foreign_row.status == "pending"
+    assert foreign_row.locked_by is None
+    assert foreign_row.lease_expires_at is None
+
+
+@pytest.mark.asyncio
+async def test_successful_assessment_worker_publication_becomes_published(
+    session_factory: async_sessionmaker[AsyncSession],
+    fake_aio_pika: None,
+) -> None:
+    message_id = await _insert_outbox_row(
+        session_factory,
+        available_at=_past_now(),
+    )
+    sink = _PublishSink()
+    publisher = OutboxPublisher(
+        session_factory,
+        _RecordingConnection(sink),
+        _settings(),
+        publisher_id="publisher-a",
+    )
+
+    published = await publisher._publish_batch()
+
+    assert published == 1
+    stored = await _get_outbox_row(session_factory, message_id)
+    assert sink.published == [message_id]
+    assert stored.status == "published"
+    assert stored.locked_by is None
+    assert stored.lease_expires_at is None
+    assert stored.publish_attempt_count == 1
+    assert stored.last_error is None
+
+
+@pytest.mark.asyncio
+async def test_transient_assessment_worker_failure_returns_to_pending(
+    session_factory: async_sessionmaker[AsyncSession],
+    fake_aio_pika: None,
+) -> None:
+    before_publish = datetime.now(UTC)
+    message_id = await _insert_outbox_row(
+        session_factory,
+        available_at=_past_now(),
+    )
+    sink = _PublishSink(fail_message_ids={message_id})
+    publisher = OutboxPublisher(
+        session_factory,
+        _RecordingConnection(sink),
+        _settings(),
+        publisher_id="publisher-a",
+    )
+
+    published = await publisher._publish_batch()
+
+    assert published == 0
+    stored = await _get_outbox_row(session_factory, message_id)
+    assert sink.published == []
+    assert stored.status == "pending"
+    assert stored.locked_by is None
+    assert stored.lease_expires_at is None
+    assert stored.publish_attempt_count == 1
+    assert stored.last_error is not None
+    assert _normalize_datetime(stored.available_at) > before_publish
+
+
+@pytest.mark.asyncio
+async def test_terminal_assessment_worker_failure_becomes_failed(
+    session_factory: async_sessionmaker[AsyncSession],
+    fake_aio_pika: None,
+) -> None:
+    message_id = await _insert_outbox_row(
+        session_factory,
+        available_at=_past_now(),
+        publish_attempt_count=_settings().outbox_max_publish_attempts - 1,
+    )
+    sink = _PublishSink(fail_message_ids={message_id})
+    publisher = OutboxPublisher(
+        session_factory,
+        _RecordingConnection(sink),
+        _settings(),
+        publisher_id="publisher-a",
+    )
+
+    published = await publisher._publish_batch()
+
+    assert published == 0
+    stored = await _get_outbox_row(session_factory, message_id)
+    assert stored.status == "failed"
+    assert stored.locked_by is None
+    assert stored.lease_expires_at is None
+    assert stored.publish_attempt_count == _settings().outbox_max_publish_attempts
+    assert stored.last_error is not None
+
+
+@pytest.mark.asyncio
+async def test_two_publishers_cannot_claim_same_assessment_worker_row(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    message_id = await _insert_outbox_row(
+        session_factory,
+        available_at=_past_now(),
+    )
+    first = OutboxPublisher(
+        session_factory,
+        _RecordingConnection(_PublishSink()),
+        _settings(),
+        publisher_id="publisher-a",
+    )
+    second = OutboxPublisher(
+        session_factory,
+        _RecordingConnection(_PublishSink()),
+        _settings(),
+        publisher_id="publisher-b",
+    )
+
+    first_claim = await first._claim_batch()
+    second_claim = await second._claim_batch()
+
+    assert [record.message_id for record in first_claim] == [message_id]
+    assert second_claim == []
+    stored = await _get_outbox_row(session_factory, message_id)
+    assert stored.status == "processing"
+    assert stored.locked_by == "publisher-a"
+
+
+@pytest.mark.asyncio
 async def test_publish_happens_after_claim_commit(monkeypatch: pytest.MonkeyPatch) -> None:
     record = OutboxMessageRecord(
         message_id=uuid4(),
-        producer_component="assessment_worker",
+        producer_component=ASSESSMENT_WORKER_PRODUCER,
         exchange_name="sar.events",
         message_type="assessment.completed",
         schema_version=1,

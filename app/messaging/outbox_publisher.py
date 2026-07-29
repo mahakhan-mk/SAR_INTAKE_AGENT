@@ -15,7 +15,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.config import Settings
 from app.messaging.contracts import SAR_EVENTS_EXCHANGE_NAME
 from app.messaging.envelope import create_message_envelope
-from app.repositories.worker_messaging_repository import OutboxMessageRecord, WorkerOutboxRepository
+from app.repositories.worker_messaging_repository import (
+    ASSESSMENT_WORKER_PRODUCER,
+    OutboxMessageRecord,
+    WorkerOutboxRepository,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +69,13 @@ class OutboxPublisher:
             exchange = await channel.get_exchange(SAR_EVENTS_EXCHANGE_NAME, ensure=True)
             published = 0
             for record in records:
+                if record.producer_component != ASSESSMENT_WORKER_PRODUCER:
+                    logger.error(
+                        "outbox_foreign_producer_skipped message_id=%s producer_component=%s",
+                        record.message_id,
+                        record.producer_component,
+                    )
+                    continue
                 try:
                     await asyncio.wait_for(
                         self._publish_record(exchange, record),
@@ -191,7 +202,7 @@ class OutboxPublisher:
             causation_id=record.causation_id,
             expected_workflow_version=record.expected_workflow_version,
             attempt=record.message_attempt,
-            occurred_at=record.created_at,
+            occurred_at=_ensure_timezone_aware(record.created_at),
             actor_id=record.actor_id,
             payload=dict(record.payload or {}),
         )
@@ -216,3 +227,9 @@ class OutboxPublisher:
             ),
             routing_key=record.message_type,
         )
+
+
+def _ensure_timezone_aware(value: datetime) -> datetime:
+    if value.tzinfo is not None:
+        return value
+    return value.replace(tzinfo=UTC)

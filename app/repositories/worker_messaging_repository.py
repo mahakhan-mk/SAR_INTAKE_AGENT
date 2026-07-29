@@ -12,6 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.messaging.contracts import SAR_EVENTS_EXCHANGE_NAME, validate_assessment_event_payload
 from app.models.database import OutboxMessage, ProcessedMessage, WorkflowTask
 
+ASSESSMENT_WORKER_PRODUCER = "assessment_worker"
+
 
 @dataclass(frozen=True, slots=True)
 class ClaimedTask:
@@ -268,7 +270,7 @@ class WorkerOutboxRepository:
         session.add(
             OutboxMessage(
                 message_id=message_id,
-                producer_component="assessment_worker",
+                producer_component=ASSESSMENT_WORKER_PRODUCER,
                 exchange_name=SAR_EVENTS_EXCHANGE_NAME,
                 message_type=event_type,
                 schema_version=1,
@@ -311,6 +313,7 @@ class WorkerOutboxRepository:
         candidate_ids = (
             select(OutboxMessage.message_id)
             .where(
+                OutboxMessage.producer_component == ASSESSMENT_WORKER_PRODUCER,
                 or_(
                     and_(
                         OutboxMessage.status == "pending",
