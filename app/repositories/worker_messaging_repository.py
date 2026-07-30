@@ -13,7 +13,7 @@ from app.domain.errors import sanitize_failure_summary
 from app.messaging.contracts import SAR_EVENTS_EXCHANGE_NAME, validate_assessment_event_payload
 from app.models.database import OutboxMessage, ProcessedMessage, WorkflowTask
 
-ASSESSMENT_WORKER_PRODUCER = "assessment_worker"
+ASSESSMENT_WORKER_PRODUCER = "assessment-worker"
 
 
 @dataclass(frozen=True, slots=True)
@@ -362,6 +362,7 @@ class WorkerOutboxRepository:
             update(OutboxMessage)
             .where(
                 OutboxMessage.message_id == message_id,
+                OutboxMessage.producer_component == ASSESSMENT_WORKER_PRODUCER,
                 OutboxMessage.status == "processing",
                 OutboxMessage.locked_by == owner,
             )
@@ -396,6 +397,7 @@ class WorkerOutboxRepository:
             update(OutboxMessage)
             .where(
                 OutboxMessage.message_id == message_id,
+                OutboxMessage.producer_component == ASSESSMENT_WORKER_PRODUCER,
                 OutboxMessage.status == "processing",
                 OutboxMessage.locked_by == owner,
             )

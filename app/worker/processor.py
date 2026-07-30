@@ -116,6 +116,7 @@ class CommandProcessor:
                         lease_execution,
                     )
                     self._raise_if_lease_lost(envelope, lease_execution)
+                    lease_execution.stop_event.set()
                     await self._tasks.mark_succeeded(
                         session,
                         task_id=envelope.task_id,
@@ -146,6 +147,7 @@ class CommandProcessor:
             except Exception as exc:
                 self._raise_if_lease_lost(envelope, lease_execution)
                 execution_result = None
+                lease_execution.stop_event.set()
                 async with session.begin():
                     self._raise_if_lease_lost(envelope, lease_execution)
                     await self._record_handled_failure(session, envelope, exc)
