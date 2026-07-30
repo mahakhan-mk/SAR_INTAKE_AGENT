@@ -38,6 +38,21 @@ class AssessmentResponseProjectionRecord:
     reviewer_remarks: str | None
 
 
+@dataclass(frozen=True)
+class ResponseCompletenessRecord:
+    questionnaire_type: str
+    required_question_count: int
+    answered_required_question_count: int
+    unresolved_required_response_ids: list[UUID]
+
+    @property
+    def is_complete(self) -> bool:
+        return (
+            self.required_question_count == self.answered_required_question_count
+            and not self.unresolved_required_response_ids
+        )
+
+
 class AssessmentRepository:
     async def get_assessment(self, session: AsyncSession, assessment_id: uuid.UUID) -> SarAssessment | None:
         return await session.get(SarAssessment, assessment_id)
@@ -340,6 +355,66 @@ class AssessmentRepository:
             question_responses=resolved_questions,
             required_triage_question_count=sum(1 for question in questions if question.is_required),
             unresolved_response_ids=unresolved_response_ids,
+        )
+
+    async def load_required_response_completeness(
+        self,
+        session: AsyncSession,
+        assessment_id: UUID | str,
+        questionnaire_type: str,
+    ) -> ResponseCompletenessRecord:
+        version = await self._get_latest_active_questionnaire_version(session, questionnaire_type)
+        if version is None:
+            return ResponseCompletenessRecord(
+                questionnaire_type=questionnaire_type,
+                required_question_count=0,
+                answered_required_question_count=0,
+                unresolved_required_response_ids=[],
+            )
+
+        questions = (
+            await session.execute(
+                select(QuestionDefinition).where(
+                    QuestionDefinition.questionnaire_version_id == version.id,
+                    QuestionDefinition.is_visible.is_(True),
+                    QuestionDefinition.is_required.is_(True),
+                )
+            )
+        ).scalars().all()
+        if not questions:
+            return ResponseCompletenessRecord(
+                questionnaire_type=questionnaire_type,
+                required_question_count=0,
+                answered_required_question_count=0,
+                unresolved_required_response_ids=[],
+            )
+
+        question_ids = [question.id for question in questions]
+        responses = (
+            await session.execute(
+                select(AssessmentResponse).where(
+                    AssessmentResponse.assessment_id == self._coerce_uuid(assessment_id),
+                    AssessmentResponse.question_id.in_(question_ids),
+                )
+            )
+        ).scalars().all()
+        latest_by_question = {response.question_id: response for response in responses}
+        answered = 0
+        unresolved: list[UUID] = []
+        for question in questions:
+            response = latest_by_question.get(question.id)
+            if response is None or response.response_status != "answered":
+                continue
+            if not self._extract_candidate_values(response.answer_value):
+                unresolved.append(response.id)
+                continue
+            answered += 1
+
+        return ResponseCompletenessRecord(
+            questionnaire_type=questionnaire_type,
+            required_question_count=len(questions),
+            answered_required_question_count=answered,
+            unresolved_required_response_ids=unresolved,
         )
 
     @staticmethod

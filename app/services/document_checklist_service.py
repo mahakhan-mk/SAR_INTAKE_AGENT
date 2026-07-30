@@ -11,7 +11,7 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.models import DocumentChecklistItemReadState, DocumentChecklistReadState
-from app.domain.errors import DocumentChecklistRunNotFoundError
+from app.domain.errors import DocumentChecklistRunNotFoundError, sanitize_failure_summary
 from app.llm.client import AzureExecutiveSummaryClient
 from app.llm.executive_summary import ExecutiveSummaryPromptLoader
 from app.models.database import DocumentChecklistItem, DocumentChecklistRun
@@ -388,7 +388,11 @@ class DocumentChecklistExecutionService(_DocumentChecklistReadStateBuilder):
                 summary_prompt_version=prompt.version,
                 summary_input_hash=input_hash,
                 summary_generated_at=generated_at,
-                error_summary=str(exc)[:500],
+                error_summary=sanitize_failure_summary(
+                    exc,
+                    fallback="Checklist generation returned invalid structured output.",
+                    max_length=500,
+                ),
             )
 
     @staticmethod
@@ -478,4 +482,3 @@ class DocumentChecklistExecutionService(_DocumentChecklistReadStateBuilder):
     def _build_input_hash(payload: dict[str, object]) -> str:
         canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-

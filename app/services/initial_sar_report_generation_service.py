@@ -8,6 +8,7 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.errors import sanitize_failure_summary
 from app.repositories.document_repository import DocumentRepository
 from app.repositories.report_repository import InitialSarReportRepository
 from app.services.initial_sar_report_renderer import InitialSarReportRenderer, RenderedInitialSarReport
@@ -111,11 +112,13 @@ class InitialSarReportGenerationService:
             return
         try:
             await self.storage.delete_report(stored_report.storage_container, stored_report.storage_key)
-        except Exception:
+        except Exception as exc:
             logger.exception(
-                "Failed to compensate stored Initial SAR report after persistence failure container=%s key=%s",
-                stored_report.storage_container,
-                stored_report.storage_key,
+                "Failed to compensate stored Initial SAR report after persistence failure error=%s",
+                sanitize_failure_summary(
+                    exc,
+                    fallback="Report artifact cleanup failed.",
+                ),
             )
 
     async def _load_architecture_image_bytes(self, session: AsyncSession, assessment_id: UUID, preview: object) -> bytes | None:

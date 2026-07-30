@@ -12,7 +12,10 @@ from app.domain.errors import (
     AnalysisRunNotFoundError,
     AnalysisRunStatusConflictError,
     AssessmentNotFoundError,
+    BusinessPreconditionError,
     DocumentChecklistRunNotFoundError,
+    TransientDependencyError,
+    sanitize_failure_summary,
 )
 from app.messaging.contracts import COMMAND_FAILURE_EVENT
 from app.messaging.envelope import MessageEnvelope
@@ -336,6 +339,7 @@ def _is_retryable(exc: Exception) -> bool:
             AnalysisRunNotFoundError,
             AnalysisRunStatusConflictError,
             DocumentChecklistRunNotFoundError,
+            BusinessPreconditionError,
             LookupError,
             ValueError,
         ),
@@ -343,5 +347,35 @@ def _is_retryable(exc: Exception) -> bool:
 
 
 def _error_summary(exc: Exception) -> str:
-    text = str(exc).strip() or type(exc).__name__
-    return f"{type(exc).__name__}: {text}"[:2000]
+    if not isinstance(
+        exc,
+        (
+            AssessmentNotFoundError,
+            AnalysisRunNotFoundError,
+            AnalysisRunStatusConflictError,
+            DocumentChecklistRunNotFoundError,
+            BusinessPreconditionError,
+            LookupError,
+            ValueError,
+        ),
+    ):
+        return sanitize_failure_summary(
+            _fallback_failure_summary(exc),
+            fallback="Assessment command processing failed.",
+        )
+    return sanitize_failure_summary(
+        exc,
+        fallback=_fallback_failure_summary(exc),
+    )
+
+
+def _fallback_failure_summary(exc: Exception) -> str:
+    if isinstance(exc, TimeoutError):
+        return "Operation timed out while processing the assessment command."
+    if isinstance(exc, TransientDependencyError):
+        return "Temporary external dependency failure while processing the assessment command."
+    if isinstance(exc, BusinessPreconditionError | ValueError):
+        return "Command business precondition was not satisfied."
+    if isinstance(exc, SQLAlchemyError):
+        return "Database operation failed while processing the assessment command."
+    return "Assessment command processing failed."

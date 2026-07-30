@@ -8,10 +8,10 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.errors import AssessmentNotFoundError, DocumentChecklistRunNotFoundError
+from app.domain.errors import AssessmentNotFoundError, BusinessPreconditionError, DocumentChecklistRunNotFoundError
 from app.messaging.contracts import validate_command_payload
 from app.messaging.envelope import MessageEnvelope
-from app.models.enums import DocumentChecklistRunStatus
+from app.models.enums import DocumentChecklistRunStatus, QuestionnaireType
 from app.repositories.report_repository import InitialSarReportRepository
 from app.services.document_checklist_service import DocumentChecklistExecutionService
 from app.services.executive_summary_service import ExecutiveSummaryService
@@ -49,6 +49,7 @@ class AssessmentCommandHandlers:
         envelope: MessageEnvelope,
     ) -> CommandExecutionResult:
         validate_command_payload(envelope.message_type, envelope.payload)
+        await self._require_complete_risk_inputs(session, envelope.assessment_id)
         result = await self.risk_service.create_analysis_run(
             session,
             envelope.assessment_id,
@@ -67,6 +68,13 @@ class AssessmentCommandHandlers:
         envelope: MessageEnvelope,
     ) -> CommandExecutionResult:
         validate_command_payload(envelope.message_type, envelope.payload)
+        await self._require_assessment(session, envelope.assessment_id)
+        for questionnaire_type in ("intake", QuestionnaireType.TRIAGE.value):
+            await self.risk_service.assessment_repository.load_required_response_completeness(
+                session,
+                envelope.assessment_id,
+                questionnaire_type,
+            )
         result = await self.risk_service.create_analysis_run(
             session,
             envelope.assessment_id,
@@ -92,6 +100,7 @@ class AssessmentCommandHandlers:
         envelope: MessageEnvelope,
     ) -> CommandExecutionResult:
         validate_command_payload(envelope.message_type, envelope.payload)
+        await self._require_completed_risk_run(session, envelope.assessment_id)
         await self.checklist_service.generate_checklist(
             session,
             envelope.assessment_id,
@@ -104,6 +113,12 @@ class AssessmentCommandHandlers:
         envelope: MessageEnvelope,
     ) -> CommandExecutionResult:
         payload = validate_command_payload(envelope.message_type, envelope.payload)
+        await self._require_checklist_run_review(
+            session,
+            assessment_id=envelope.assessment_id,
+            run_id=UUID(str(payload["checklistRunId"])),
+            review_id=UUID(str(payload["reviewId"])),
+        )
         state = await self.checklist_service.finalize_checklist(
             session,
             assessment_id=envelope.assessment_id,
@@ -131,6 +146,7 @@ class AssessmentCommandHandlers:
         envelope: MessageEnvelope,
     ) -> CommandExecutionResult:
         validate_command_payload(envelope.message_type, envelope.payload)
+        await self._require_report_inputs(session, envelope.assessment_id)
         generated = await self.report_service.generate_report(
             session,
             assessment_id=envelope.assessment_id,
@@ -156,6 +172,7 @@ class AssessmentCommandHandlers:
         envelope: MessageEnvelope,
     ) -> CommandExecutionResult:
         validate_command_payload(envelope.message_type, envelope.payload)
+        await self._require_report_inputs(session, envelope.assessment_id)
         generated = await self.report_service.generate_report(
             session,
             assessment_id=envelope.assessment_id,
@@ -174,6 +191,91 @@ class AssessmentCommandHandlers:
                 generated.report_id,
             ),
         )
+
+    async def _require_assessment(self, session: AsyncSession, assessment_id: UUID) -> None:
+        assessment = await self.risk_service.assessment_repository.get_assessment(session, assessment_id)
+        if assessment is None:
+            raise AssessmentNotFoundError()
+
+    async def _require_complete_risk_inputs(self, session: AsyncSession, assessment_id: UUID) -> None:
+        await self._require_assessment(session, assessment_id)
+        assessment_repository = self.risk_service.assessment_repository
+        for questionnaire_type in ("intake", QuestionnaireType.TRIAGE.value):
+            completeness = await assessment_repository.load_required_response_completeness(
+                session,
+                assessment_id,
+                questionnaire_type,
+            )
+            if not completeness.is_complete:
+                raise BusinessPreconditionError(
+                    "Required finalized assessment responses were not available."
+                )
+
+        triage_responses = await assessment_repository.load_active_triage_question_responses(session, assessment_id)
+        required_answer_count = sum(1 for response in triage_responses.question_responses if response.is_required)
+        if (
+            required_answer_count < triage_responses.required_triage_question_count
+            or triage_responses.unresolved_response_ids
+        ):
+            raise BusinessPreconditionError(
+                "Required finalized assessment responses were not available."
+            )
+
+    async def _require_completed_risk_run(self, session: AsyncSession, assessment_id: UUID) -> None:
+        await self._require_assessment(session, assessment_id)
+        latest_run = await self.risk_service.analysis_repository.get_latest_usable_analysis_run(session, assessment_id)
+        if latest_run is None:
+            raise BusinessPreconditionError(
+                "Completed inherent-risk input was not available."
+            )
+
+    async def _require_checklist_run_review(
+        self,
+        session: AsyncSession,
+        *,
+        assessment_id: UUID,
+        run_id: UUID,
+        review_id: UUID,
+    ) -> None:
+        run_record = await self.checklist_service.checklist_repository.get_checklist_run_with_items(
+            session,
+            assessment_id=assessment_id,
+            run_id=run_id,
+        )
+        if run_record is None:
+            raise DocumentChecklistRunNotFoundError()
+        review = await self.checklist_service.checklist_repository.get_item_review_for_run_items(
+            session,
+            assessment_id=assessment_id,
+            review_id=review_id,
+            item_ids=[item.id for item in run_record.items],
+        )
+        if review is None:
+            raise BusinessPreconditionError(
+                "Requested review does not belong to the checklist run."
+            )
+
+    async def _require_report_inputs(self, session: AsyncSession, assessment_id: UUID) -> None:
+        await self._require_assessment(session, assessment_id)
+        latest_run = await self.report_service.context_service.checklist_repository.get_latest_checklist_run_with_items(
+            session,
+            assessment_id,
+        )
+        if latest_run is None or latest_run.run.status not in {
+            DocumentChecklistRunStatus.COMPLETED.value,
+            DocumentChecklistRunStatus.COMPLETED_WITH_LIMITATIONS.value,
+        }:
+            raise BusinessPreconditionError(
+                "Report generation requires a completed checklist."
+            )
+        analysis_run = await self.report_service.context_service.analysis_repository.get_latest_usable_analysis_run(
+            session,
+            assessment_id,
+        )
+        if analysis_run is None:
+            raise BusinessPreconditionError(
+                "Report generation requires completed risk results."
+            )
 
 
 async def _run(callback: Callback | None) -> None:

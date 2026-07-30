@@ -7,7 +7,7 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.database import InitialSarReport
+from app.models.database import InitialSarReport, SarAssessment
 
 
 class InitialSarReportRepository:
@@ -91,10 +91,20 @@ class InitialSarReportRepository:
         session: AsyncSession,
         assessment_id: UUID | str,
     ) -> int:
+        normalized_assessment_id = self._coerce_uuid(assessment_id)
+        assessment = (
+            await session.execute(
+                select(SarAssessment)
+                .where(SarAssessment.id == normalized_assessment_id)
+                .with_for_update()
+            )
+        ).scalars().first()
+        if assessment is None:
+            raise LookupError(f"assessment {normalized_assessment_id} was not found")
         latest_version = (
             await session.execute(
                 select(func.coalesce(func.max(InitialSarReport.report_version), 0)).where(
-                    InitialSarReport.assessment_id == self._coerce_uuid(assessment_id)
+                    InitialSarReport.assessment_id == normalized_assessment_id
                 )
             )
         ).scalar_one()

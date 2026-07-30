@@ -310,6 +310,27 @@ class DocumentChecklistRepository:
         ).scalars().all()
         return {review.document_type: review for review in reviews}
 
+    async def get_item_review_for_run_items(
+        self,
+        session: AsyncSession,
+        *,
+        assessment_id: UUID | str,
+        review_id: UUID | str,
+        item_ids: Sequence[UUID | str],
+    ) -> DocumentChecklistItemReview | None:
+        normalized_item_ids = [self._coerce_uuid(item_id) for item_id in item_ids]
+        if not normalized_item_ids:
+            return None
+        return (
+            await session.execute(
+                select(DocumentChecklistItemReview).where(
+                    DocumentChecklistItemReview.id == self._coerce_uuid(review_id),
+                    DocumentChecklistItemReview.assessment_id == self._coerce_uuid(assessment_id),
+                    DocumentChecklistItemReview.source_item_id.in_(normalized_item_ids),
+                )
+            )
+        ).scalars().first()
+
     @classmethod
     def _normalize_items(
         cls,

@@ -9,6 +9,7 @@ from sqlalchemy import and_, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.errors import sanitize_failure_summary
 from app.messaging.contracts import SAR_EVENTS_EXCHANGE_NAME, validate_assessment_event_payload
 from app.models.database import OutboxMessage, ProcessedMessage, WorkflowTask
 
@@ -408,7 +409,10 @@ class WorkerOutboxRepository:
                     if terminal
                     else now + timedelta(seconds=delay)
                 ),
-                last_error=f"{type(error).__name__}: {error}"[:2000],
+                last_error=sanitize_failure_summary(
+                    error,
+                    fallback="Outbox publication failed.",
+                ),
             )
         )
         if result.rowcount != 1:
