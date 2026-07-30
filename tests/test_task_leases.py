@@ -17,6 +17,7 @@ from app.repositories.worker_messaging_repository import (
     TaskLeaseUnavailable,
     WorkflowTaskExecutionRepository,
 )
+from app.worker.handlers import CommandExecutionResult
 from app.worker.processor import CommandProcessor, InfrastructureFailure
 
 
@@ -143,6 +144,42 @@ class _Registry:
     def resolve(self, message_type: str):
         assert message_type == COMMAND_TYPE
         return self._handler
+
+
+class _ObservingTasks:
+    def __init__(self, delegate) -> None:
+        self.delegate = delegate
+        self.success_marked = asyncio.Event()
+        self.heartbeat_stopped = asyncio.Event()
+        self.renew_after_success_count = 0
+        self.commit_callback_ran_after_shutdown = False
+
+    async def claim(self, *args, **kwargs):
+        return await self.delegate.claim(*args, **kwargs)
+
+    async def renew_lease(self, *args, **kwargs):
+        if self.success_marked.is_set():
+            self.renew_after_success_count += 1
+        return await self.delegate.renew_lease(*args, **kwargs)
+
+    async def mark_succeeded(self, *args, **kwargs):
+        await self.delegate.mark_succeeded(*args, **kwargs)
+        self.success_marked.set()
+
+    def note_committed(self) -> None:
+        self.commit_callback_ran_after_shutdown = self.heartbeat_stopped.is_set()
+
+
+class _HeartbeatObservedProcessor(CommandProcessor):
+    def __init__(self, *args, observing_tasks: _ObservingTasks, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._observing_tasks = observing_tasks
+
+    async def _renew_lease_until_stopped(self, envelope, lease_execution):
+        try:
+            await super()._renew_lease_until_stopped(envelope, lease_execution)
+        finally:
+            self._observing_tasks.heartbeat_stopped.set()
 
 
 @pytest.mark.asyncio
@@ -468,3 +505,49 @@ async def test_lease_loss_prevents_final_commit(
     assert outbox_count == 0
     assert processed_count == 0
     assert questionnaire_count == 0
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_stops_before_success_commit_callback_without_terminal_renewal(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await _insert_task(session_factory)
+    settings = _settings(command_lease_seconds=30, command_lease_heartbeat_seconds=0.01)
+
+    async def handler(session: AsyncSession, envelope) -> SimpleNamespace:
+        _ = session, envelope
+        return CommandExecutionResult(
+            "assessment.risk.completed",
+            {},
+            on_commit=observing_tasks.note_committed,
+        )
+
+    base_processor = CommandProcessor(session_factory, settings, _Registry(handler))
+    observing_tasks = _ObservingTasks(base_processor._tasks)
+    processor = _HeartbeatObservedProcessor(
+        session_factory,
+        settings,
+        _Registry(handler),
+        observing_tasks=observing_tasks,
+    )
+    processor._tasks = observing_tasks
+    envelope = create_message_envelope(
+        message_type=COMMAND_TYPE,
+        assessment_id=ASSESSMENT_ID,
+        workflow_id=WORKFLOW_ID,
+        task_id=TASK_ID,
+        expected_workflow_version=WORKFLOW_VERSION,
+        attempt=1,
+        actor_id="orchestrator",
+        payload=PAYLOAD,
+        occurred_at=NOW,
+    )
+
+    assert await processor.process(envelope) is True
+
+    task = await _get_task(session_factory)
+    assert task.status == "succeeded"
+    assert observing_tasks.success_marked.is_set()
+    assert observing_tasks.heartbeat_stopped.is_set()
+    assert observing_tasks.renew_after_success_count == 0
+    assert observing_tasks.commit_callback_ran_after_shutdown is True

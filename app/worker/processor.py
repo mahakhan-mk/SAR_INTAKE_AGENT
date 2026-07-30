@@ -106,45 +106,15 @@ class CommandProcessor:
         execution_result: CommandExecutionResult | None = None
         committed = False
         try:
-            async with session.begin():
-                self._raise_if_lease_lost(envelope, lease_execution)
-                try:
-                    async with session.begin_nested():
-                        execution_result = await self._execute_handler(
-                            handler,
-                            session,
-                            envelope,
-                            lease_execution,
-                        )
+            try:
+                async with session.begin():
                     self._raise_if_lease_lost(envelope, lease_execution)
-                except SQLAlchemyError:
-                    raise
-                except TaskLeaseUnavailable:
-                    raise
-                except Exception as exc:
-                    self._raise_if_lease_lost(envelope, lease_execution)
-                    await self._record_handled_failure(session, envelope, exc)
-                    await self._tasks.renew_lease(
+                    execution_result = await self._execute_handler(
+                        handler,
                         session,
-                        task_id=envelope.task_id,
-                        attempt=envelope.attempt,
-                        lease_owner=self._settings.worker_instance_id,
-                        lease_seconds=self._settings.command_lease_seconds,
+                        envelope,
+                        lease_execution,
                     )
-                    self._raise_if_lease_lost(envelope, lease_execution)
-                    logger.exception(
-                        "command_execution_failed message_id=%s assessment_id=%s "
-                        "workflow_id=%s task_id=%s command=%s attempt=%s retryable=%s",
-                        envelope.message_id,
-                        envelope.assessment_id,
-                        envelope.workflow_id,
-                        envelope.task_id,
-                        envelope.message_type,
-                        envelope.attempt,
-                        _is_retryable(exc),
-                    )
-                    execution_result = None
-                else:
                     self._raise_if_lease_lost(envelope, lease_execution)
                     await self._tasks.mark_succeeded(
                         session,
@@ -169,8 +139,38 @@ class CommandProcessor:
                         consumer_name=self._settings.consumer_name,
                         message_id=envelope.message_id,
                     )
+            except SQLAlchemyError:
+                raise
+            except TaskLeaseUnavailable:
+                raise
+            except Exception as exc:
+                self._raise_if_lease_lost(envelope, lease_execution)
+                execution_result = None
+                async with session.begin():
+                    self._raise_if_lease_lost(envelope, lease_execution)
+                    await self._record_handled_failure(session, envelope, exc)
+                    await self._tasks.renew_lease(
+                        session,
+                        task_id=envelope.task_id,
+                        attempt=envelope.attempt,
+                        lease_owner=self._settings.worker_instance_id,
+                        lease_seconds=self._settings.command_lease_seconds,
+                    )
+                    self._raise_if_lease_lost(envelope, lease_execution)
+                logger.exception(
+                    "command_execution_failed message_id=%s assessment_id=%s "
+                    "workflow_id=%s task_id=%s command=%s attempt=%s retryable=%s",
+                    envelope.message_id,
+                    envelope.assessment_id,
+                    envelope.workflow_id,
+                    envelope.task_id,
+                    envelope.message_type,
+                    envelope.attempt,
+                    _is_retryable(exc),
+                )
 
             committed = True
+            await self._stop_heartbeat(lease_execution, heartbeat_task)
             if execution_result is not None:
                 await execution_result.committed()
             return True
@@ -181,11 +181,7 @@ class CommandProcessor:
         except (LookupError, ValueError) as exc:
             raise NonRetryableCommandFailure(str(exc)) from exc
         finally:
-            lease_execution.stop_event.set()
-            try:
-                await heartbeat_task
-            except asyncio.CancelledError:
-                pass
+            await self._stop_heartbeat(lease_execution, heartbeat_task)
             if execution_result is not None and not committed:
                 await execution_result.rolled_back()
             await session.close()
@@ -329,6 +325,17 @@ class CommandProcessor:
         raise TaskLeaseUnavailable(
             f"task {envelope.task_id} lease lost for attempt {envelope.attempt}: {reason}"
         )
+
+    @staticmethod
+    async def _stop_heartbeat(
+        lease_execution: _LeaseExecution,
+        heartbeat_task: asyncio.Task[None],
+    ) -> None:
+        lease_execution.stop_event.set()
+        try:
+            await heartbeat_task
+        except asyncio.CancelledError:
+            pass
 
 
 def _is_retryable(exc: Exception) -> bool:
