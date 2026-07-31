@@ -4,6 +4,7 @@ import os
 import socket
 from uuid import uuid4
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 from typing import Protocol
 
@@ -136,24 +137,28 @@ def _positive_float(name: str, default: float) -> float:
 class InherentRiskScoringPolicy(Protocol):
     version: str
 
-    def determine_level(self, score_percentage: float | None) -> RiskLevel | None:
+    def determine_level(self, normalized_score: Decimal | float | None) -> RiskLevel | None:
         ...
 
 
 @dataclass(frozen=True)
-class PercentageInherentRiskScoringPolicy:
-    version: str = "inherent-risk-v1-percentage"
+class WorkbookRatioInherentRiskScoringPolicy:
+    version: str = "inherent-risk-v2-weighted-workbook-ratio"
+    workbook_total_maximum: Decimal = Decimal("176")
+    low_workbook_boundary: Decimal = Decimal("78")
+    medium_workbook_boundary: Decimal = Decimal("100")
 
-    def determine_level(self, score_percentage: float | None) -> RiskLevel | None:
-        if score_percentage is None:
+    def determine_level(self, normalized_score: Decimal | float | None) -> RiskLevel | None:
+        if normalized_score is None:
             return None
-        if score_percentage < 25.0:
+        score_ratio = Decimal(str(normalized_score)) / Decimal("100")
+        low_ratio = self.low_workbook_boundary / self.workbook_total_maximum
+        medium_ratio = self.medium_workbook_boundary / self.workbook_total_maximum
+        if score_ratio <= low_ratio:
             return RiskLevel.LOW
-        if score_percentage < 50.0:
+        if score_ratio <= medium_ratio:
             return RiskLevel.MEDIUM
-        if score_percentage < 75.0:
-            return RiskLevel.HIGH
-        return RiskLevel.CRITICAL
+        return RiskLevel.HIGH
 
 
-DEFAULT_INHERENT_RISK_SCORING_POLICY = PercentageInherentRiskScoringPolicy()
+DEFAULT_INHERENT_RISK_SCORING_POLICY = WorkbookRatioInherentRiskScoringPolicy()

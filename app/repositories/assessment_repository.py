@@ -257,7 +257,6 @@ class AssessmentRepository:
                 select(QuestionDefinition)
                 .where(
                     QuestionDefinition.questionnaire_version_id == version.id,
-                    QuestionDefinition.is_visible.is_(True),
                     QuestionDefinition.response_type.in_(SCORABLE_RESPONSE_TYPES),
                 )
                 .order_by(QuestionDefinition.question_order.asc(), QuestionDefinition.id.asc())
@@ -321,7 +320,7 @@ class AssessmentRepository:
                 unresolved_response_ids.append(response.id)
                 continue
 
-            if selected_option.risk_weight is None or selected_option.risk_band is None:
+            if question.question_weight is None or selected_option.risk_weight is None or selected_option.risk_band is None:
                 unresolved_response_ids.append(response.id)
                 continue
 
@@ -330,7 +329,11 @@ class AssessmentRepository:
                 unresolved_response_ids.append(response.id)
                 continue
 
-            max_risk_weight = max(float(option.risk_weight) for option in weighted_options)
+            question_weight = int(question.question_weight)
+            option_weight = float(selected_option.risk_weight)
+            max_option_weight = max(float(option.risk_weight) for option in weighted_options)
+            weighted_score = question_weight * option_weight
+            max_weighted_score = question_weight * max_option_weight
             resolved_questions.append(
                 TriagedQuestionResponse(
                     question_code=question.question_code,
@@ -341,10 +344,13 @@ class AssessmentRepository:
                     question_text=question.question_text,
                     risk_domain=question.risk_domain or "",
                     is_required=question.is_required,
-                    why_it_matters=selected_option.why_it_matters or "",
+                    why_it_matters=question.why_it_matters or "",
                     selected_option_label=selected_option.option_label,
-                    risk_weight=float(selected_option.risk_weight),
-                    max_risk_weight=max_risk_weight,
+                    question_weight=question_weight,
+                    option_weight=option_weight,
+                    weighted_score=weighted_score,
+                    max_option_weight=max_option_weight,
+                    max_weighted_score=max_weighted_score,
                     risk_level=RiskLevel(selected_option.risk_band),
                     risk_signal=selected_option.risk_signal or "",
                     confidence=1.0,

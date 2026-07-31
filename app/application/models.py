@@ -21,8 +21,11 @@ class TriagedQuestionResponse:
     is_required: bool
     why_it_matters: str
     selected_option_label: str
-    risk_weight: float
-    max_risk_weight: float
+    question_weight: int
+    option_weight: float
+    weighted_score: float
+    max_option_weight: float
+    max_weighted_score: float
     risk_level: RiskLevel
     risk_signal: str
     confidence: float
@@ -45,8 +48,11 @@ class ComputedQuestionRisk:
     question_text: str
     risk_domain: str
     risk_level: RiskLevel
-    risk_weight: float
-    max_risk_weight: float
+    question_weight: int | None
+    option_weight: float | None
+    weighted_score: float
+    max_option_weight: float | None
+    max_weighted_score: float
     why_it_matters: str
     risk_signal: str
     explanation: str

@@ -118,6 +118,8 @@ class QuestionDefinition(Base):
     question_order: Mapped[int | None] = mapped_column(Integer, nullable=True)
     risk_domain: Mapped[str | None] = mapped_column(String(128), nullable=True)
     is_visible: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    question_weight: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    why_it_matters: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class QuestionOption(Base):
@@ -139,7 +141,6 @@ class QuestionOption(Base):
     risk_weight: Mapped[float | None] = mapped_column(Numeric(asdecimal=False), nullable=True)
     display_order: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     risk_band: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
-    why_it_matters: Mapped[str | None] = mapped_column(Text, nullable=True)
     risk_signal: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 

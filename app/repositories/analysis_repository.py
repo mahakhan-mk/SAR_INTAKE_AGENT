@@ -161,7 +161,7 @@ class AnalysisRepository:
                         if selected_option is not None and selected_option.risk_weight is not None
                         else None
                     ),
-                    option_why_it_matters=selected_option.why_it_matters if selected_option is not None else None,
+                    option_why_it_matters=question.why_it_matters,
                     option_risk_signal=selected_option.risk_signal if selected_option is not None else None,
                     result_risk_level=result.risk_level if result is not None else None,
                     result_risk_score=(
@@ -260,8 +260,19 @@ class AnalysisRepository:
                     question_text=self._extract_str(result.input_snapshot, "questionText"),
                     risk_domain=result.risk_domain or "",
                     risk_level=RiskLevel(result.risk_level),
-                    risk_weight=self._extract_float(result.input_snapshot, "riskWeight", result.risk_score),
-                    max_risk_weight=self._extract_float(result.input_snapshot, "maxRiskWeight", result.risk_score),
+                    question_weight=self._extract_int(result.input_snapshot, "questionWeight"),
+                    option_weight=self._extract_float(result.input_snapshot, "optionWeight"),
+                    weighted_score=self._extract_float(
+                        result.input_snapshot,
+                        "weightedScore",
+                        self._extract_float(result.input_snapshot, "riskWeight", result.risk_score),
+                    ),
+                    max_option_weight=self._extract_float(result.input_snapshot, "maxOptionWeight"),
+                    max_weighted_score=self._extract_float(
+                        result.input_snapshot,
+                        "maxWeightedScore",
+                        self._extract_float(result.input_snapshot, "maxRiskWeight", result.risk_score),
+                    ),
                     why_it_matters=self._extract_str(result.input_snapshot, "whyItMatters", result.risk_impact),
                     risk_signal=result.risk_signal or self._extract_str(result.input_snapshot, "riskSignal"),
                     explanation=result.explanation,
@@ -395,6 +406,17 @@ class AnalysisRepository:
             return 0.0
 
     @staticmethod
+    def _extract_int(input_snapshot: object | None, key: str, fallback: object | None = None) -> int | None:
+        snapshot = AnalysisRepository._coerce_snapshot(input_snapshot)
+        value = snapshot.get(key, fallback)
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
     def _extract_candidate_values(answer_value: object | None) -> list[str]:
         if isinstance(answer_value, str):
             return [answer_value] if answer_value else []
@@ -471,7 +493,7 @@ class AnalysisRepository:
                         analysis_run_id=analysis_run_id,
                         response_id=result.response_id,
                         risk_domain=result.risk_domain,
-                        risk_score=result.risk_weight,
+                        risk_score=result.weighted_score,
                         risk_level=result.risk_level.value,
                         risk_impact=result.why_it_matters,
                         risk_signal=result.risk_signal,
@@ -483,7 +505,7 @@ class AnalysisRepository:
                 continue
 
             existing.risk_domain = result.risk_domain
-            existing.risk_score = result.risk_weight
+            existing.risk_score = result.weighted_score
             existing.risk_level = result.risk_level.value
             existing.risk_impact = result.why_it_matters
             existing.risk_signal = result.risk_signal

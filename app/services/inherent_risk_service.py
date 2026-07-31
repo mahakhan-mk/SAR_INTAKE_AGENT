@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from decimal import Decimal
 from typing import Sequence
 import uuid
 
@@ -39,13 +40,13 @@ class _InherentRiskStateBuilder:
     ) -> list[TopRiskDriverState]:
         grouped: dict[str, list[ComputedQuestionRisk]] = defaultdict(list)
         for result in question_results:
-            if result.risk_level in {RiskLevel.HIGH, RiskLevel.CRITICAL}:
+            if result.risk_level == RiskLevel.HIGH:
                 grouped[result.risk_domain].append(result)
 
         ranked_domains: list[tuple[int, float, str, RiskLevel]] = []
         for domain, domain_results in grouped.items():
             highest_level = max((result.risk_level for result in domain_results), key=lambda level: level.rank)
-            highest_weight = max(result.risk_weight for result in domain_results)
+            highest_weight = max(result.weighted_score for result in domain_results)
             ranked_domains.append((highest_level.rank, highest_weight, domain, highest_level))
 
         ranked_domains.sort(key=lambda item: (-item[0], -item[1], item[2]))
@@ -111,12 +112,21 @@ class InherentRiskExecutionService(_InherentRiskStateBuilder):
             return None
 
         question_results = self._build_question_results(triage_payload)
-        triage_score = sum(result.risk_weight for result in question_results) if question_results else 0.0
-        inherent_score = self._calculate_score_percentage(question_results)
+        raw_score = self._calculate_raw_score(question_results)
+        maximum_possible_score = self._calculate_maximum_possible_score(question_results)
+        normalized_score = self._calculate_normalized_score(raw_score, maximum_possible_score)
+        question_results = self._with_score_totals(
+            question_results,
+            raw_score=raw_score,
+            maximum_possible_score=maximum_possible_score,
+            normalized_score=normalized_score,
+        )
+        triage_score = float(raw_score) if question_results else 0.0
+        inherent_score = float(normalized_score) if normalized_score is not None else None
         overall_level = (
             RiskLevel.NOT_ASSESSED
             if not question_results
-            else self.scoring_policy.determine_level(inherent_score) or RiskLevel.NOT_ASSESSED
+            else self.scoring_policy.determine_level(normalized_score) or RiskLevel.NOT_ASSESSED
         )
 
         limitations = self._build_limitations(triage_payload)
@@ -174,8 +184,11 @@ class InherentRiskExecutionService(_InherentRiskStateBuilder):
                 "selectedOptionCode": response.selected_option_code,
                 "selectedOptionLabel": response.selected_option_label,
                 "selectedResponse": response.selected_option_label,
-                "riskWeight": response.risk_weight,
-                "maxRiskWeight": response.max_risk_weight,
+                "questionWeight": response.question_weight,
+                "optionWeight": response.option_weight,
+                "weightedScore": response.weighted_score,
+                "maxOptionWeight": response.max_option_weight,
+                "maxWeightedScore": response.max_weighted_score,
                 "whyItMatters": response.why_it_matters,
                 "riskSignal": response.risk_signal,
                 "riskBand": response.risk_level.value,
@@ -191,8 +204,11 @@ class InherentRiskExecutionService(_InherentRiskStateBuilder):
                     question_text=response.question_text,
                     risk_domain=response.risk_domain,
                     risk_level=response.risk_level,
-                    risk_weight=response.risk_weight,
-                    max_risk_weight=response.max_risk_weight,
+                    question_weight=response.question_weight,
+                    option_weight=response.option_weight,
+                    weighted_score=response.weighted_score,
+                    max_option_weight=response.max_option_weight,
+                    max_weighted_score=response.max_weighted_score,
                     why_it_matters=response.why_it_matters,
                     risk_signal=response.risk_signal,
                     explanation=explanation,
@@ -202,14 +218,65 @@ class InherentRiskExecutionService(_InherentRiskStateBuilder):
             )
         return question_results
 
-    def _calculate_score_percentage(self, question_results: Sequence[ComputedQuestionRisk]) -> float | None:
+    def _calculate_raw_score(self, question_results: Sequence[ComputedQuestionRisk]) -> Decimal:
+        return sum((Decimal(str(result.weighted_score)) for result in question_results), Decimal("0"))
+
+    def _calculate_maximum_possible_score(self, question_results: Sequence[ComputedQuestionRisk]) -> Decimal:
+        return sum((Decimal(str(result.max_weighted_score)) for result in question_results), Decimal("0"))
+
+    def _calculate_normalized_score(
+        self,
+        raw_score: Decimal,
+        maximum_possible_score: Decimal,
+    ) -> Decimal | None:
+        if maximum_possible_score <= 0:
+            return None
+        return (raw_score / maximum_possible_score) * Decimal("100")
+
+    def _with_score_totals(
+        self,
+        question_results: Sequence[ComputedQuestionRisk],
+        *,
+        raw_score: Decimal,
+        maximum_possible_score: Decimal,
+        normalized_score: Decimal | None,
+    ) -> list[ComputedQuestionRisk]:
         if not question_results:
-            return None
-        total_score = sum(result.risk_weight for result in question_results)
-        max_score = sum(result.max_risk_weight for result in question_results)
-        if max_score <= 0:
-            return None
-        return (total_score / max_score) * 100.0
+            return []
+        raw_score_value = float(raw_score)
+        maximum_possible_score_value = float(maximum_possible_score)
+        normalized_score_value = float(normalized_score) if normalized_score is not None else None
+        updated_results: list[ComputedQuestionRisk] = []
+        for result in question_results:
+            input_snapshot = {
+                **result.input_snapshot,
+                "rawScore": raw_score_value,
+                "maximumPossibleScore": maximum_possible_score_value,
+                "normalizedScore": normalized_score_value,
+            }
+            updated_results.append(
+                ComputedQuestionRisk(
+                    question_code=result.question_code,
+                    response_id=result.response_id,
+                    question_definition_id=result.question_definition_id,
+                    selected_option_id=result.selected_option_id,
+                    selected_option_label=result.selected_option_label,
+                    question_text=result.question_text,
+                    risk_domain=result.risk_domain,
+                    risk_level=result.risk_level,
+                    question_weight=result.question_weight,
+                    option_weight=result.option_weight,
+                    weighted_score=result.weighted_score,
+                    max_option_weight=result.max_option_weight,
+                    max_weighted_score=result.max_weighted_score,
+                    why_it_matters=result.why_it_matters,
+                    risk_signal=result.risk_signal,
+                    explanation=result.explanation,
+                    confidence=result.confidence,
+                    input_snapshot=input_snapshot,
+                )
+            )
+        return updated_results
 
     def _build_limitations(self, triage_payload: TriagedQuestionLoadResult) -> list[str]:
         limitations: list[str] = []
@@ -221,4 +288,3 @@ class InherentRiskExecutionService(_InherentRiskStateBuilder):
         if triage_payload.unresolved_response_ids:
             limitations.append(UNRESOLVED_LIMITATION)
         return limitations
-
