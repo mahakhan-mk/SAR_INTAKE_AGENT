@@ -68,13 +68,7 @@ class AssessmentCommandHandlers:
         envelope: MessageEnvelope,
     ) -> CommandExecutionResult:
         validate_command_payload(envelope.message_type, envelope.payload)
-        await self._require_assessment(session, envelope.assessment_id)
-        for questionnaire_type in ("intake", QuestionnaireType.TRIAGE.value):
-            await self.risk_service.assessment_repository.load_required_response_completeness(
-                session,
-                envelope.assessment_id,
-                questionnaire_type,
-            )
+        await self._require_complete_risk_inputs(session, envelope.assessment_id)
         result = await self.risk_service.create_analysis_run(
             session,
             envelope.assessment_id,
@@ -199,27 +193,18 @@ class AssessmentCommandHandlers:
 
     async def _require_complete_risk_inputs(self, session: AsyncSession, assessment_id: UUID) -> None:
         await self._require_assessment(session, assessment_id)
-        assessment_repository = self.risk_service.assessment_repository
-        for questionnaire_type in ("intake", QuestionnaireType.TRIAGE.value):
-            completeness = await assessment_repository.load_required_response_completeness(
-                session,
-                assessment_id,
-                questionnaire_type,
+        repository = self.risk_service.assessment_repository
+        validation = await repository.validate_risk_inputs(session, assessment_id)
+        triage = await repository.load_active_triage_question_responses(session, assessment_id)
+        all_issues = list(validation.issues) + list(triage.validation_issues)
+        if all_issues:
+            detail = "; ".join(
+                issue.reason_code
+                + (f":question={issue.question_id}" if issue.question_id is not None else "")
+                + (f":response={issue.response_id}" if issue.response_id is not None else "")
+                for issue in all_issues
             )
-            if not completeness.is_complete:
-                raise BusinessPreconditionError(
-                    "Required finalized assessment responses were not available."
-                )
-
-        triage_responses = await assessment_repository.load_active_triage_question_responses(session, assessment_id)
-        required_answer_count = sum(1 for response in triage_responses.question_responses if response.is_required)
-        if (
-            required_answer_count < triage_responses.required_triage_question_count
-            or triage_responses.unresolved_response_ids
-        ):
-            raise BusinessPreconditionError(
-                "Required finalized assessment responses were not available."
-            )
+            raise BusinessPreconditionError(f"Assessment risk input validation failed: {detail}")
 
     async def _require_completed_risk_run(self, session: AsyncSession, assessment_id: UUID) -> None:
         await self._require_assessment(session, assessment_id)

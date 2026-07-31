@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import uuid
 from uuid import UUID
 
@@ -51,6 +51,39 @@ class ResponseCompletenessRecord:
             self.required_question_count == self.answered_required_question_count
             and not self.unresolved_required_response_ids
         )
+
+
+
+
+@dataclass(frozen=True)
+class RiskInputValidationIssue:
+    reason_code: str
+    questionnaire_type: str
+    questionnaire_version_id: UUID | None = None
+    question_id: UUID | None = None
+    response_id: UUID | None = None
+
+
+@dataclass(frozen=True)
+class RiskInputValidationResult:
+    intake_version_id: UUID | None
+    triage_version_id: UUID | None
+    issues: list[RiskInputValidationIssue] = field(default_factory=list)
+
+    @property
+    def is_valid(self) -> bool:
+        return not self.issues
+
+    def summary(self) -> str:
+        parts: list[str] = []
+        for issue in self.issues:
+            detail = issue.reason_code
+            if issue.question_id is not None:
+                detail += f":question={issue.question_id}"
+            if issue.response_id is not None:
+                detail += f":response={issue.response_id}"
+            parts.append(detail)
+        return "; ".join(parts)
 
 
 class AssessmentRepository:
@@ -242,126 +275,176 @@ class AssessmentRepository:
             return None
         return None
 
+    async def resolve_represented_questionnaire_version(
+        self,
+        session: AsyncSession,
+        assessment_id: UUID | str,
+        questionnaire_type: str,
+    ) -> tuple[UUID | None, list[RiskInputValidationIssue]]:
+        rows = (
+            await session.execute(
+                select(QuestionnaireVersion.id)
+                .join(QuestionDefinition, QuestionDefinition.questionnaire_version_id == QuestionnaireVersion.id)
+                .join(AssessmentResponse, AssessmentResponse.question_id == QuestionDefinition.id)
+                .where(
+                    AssessmentResponse.assessment_id == self._coerce_uuid(assessment_id),
+                    QuestionnaireVersion.questionnaire_type == questionnaire_type,
+                )
+                .distinct()
+            )
+        ).scalars().all()
+        version_ids = list(rows)
+        if not version_ids:
+            return None, [RiskInputValidationIssue(
+                reason_code="QUESTIONNAIRE_VERSION_NOT_REPRESENTED",
+                questionnaire_type=questionnaire_type,
+            )]
+        if len(version_ids) != 1:
+            return None, [RiskInputValidationIssue(
+                reason_code="MULTIPLE_QUESTIONNAIRE_VERSIONS_REPRESENTED",
+                questionnaire_type=questionnaire_type,
+            )]
+        return version_ids[0], []
+
+    async def validate_risk_inputs(
+        self,
+        session: AsyncSession,
+        assessment_id: UUID | str,
+    ) -> RiskInputValidationResult:
+        assessment_uuid = self._coerce_uuid(assessment_id)
+        issues: list[RiskInputValidationIssue] = []
+        intake_version_id, intake_issues = await self.resolve_represented_questionnaire_version(
+            session, assessment_uuid, "intake"
+        )
+        triage_version_id, triage_issues = await self.resolve_represented_questionnaire_version(
+            session, assessment_uuid, QuestionnaireType.TRIAGE.value
+        )
+        issues.extend(intake_issues)
+        issues.extend(triage_issues)
+
+        for questionnaire_type, version_id in (
+            ("intake", intake_version_id),
+            (QuestionnaireType.TRIAGE.value, triage_version_id),
+        ):
+            if version_id is None:
+                continue
+            questions = (await session.execute(
+                select(QuestionDefinition).where(
+                    QuestionDefinition.questionnaire_version_id == version_id,
+                    QuestionDefinition.is_visible.is_(True),
+                    QuestionDefinition.is_required.is_(True),
+                )
+            )).scalars().all()
+            responses = (await session.execute(
+                select(AssessmentResponse).where(
+                    AssessmentResponse.assessment_id == assessment_uuid,
+                    AssessmentResponse.question_id.in_([q.id for q in questions]) if questions else False,
+                )
+            )).scalars().all() if questions else []
+            response_by_question = {r.question_id: r for r in responses}
+            options_by_question = await self._load_options_by_question(session, [q.id for q in questions])
+            for question in questions:
+                response = response_by_question.get(question.id)
+                if response is None:
+                    issues.append(RiskInputValidationIssue("REQUIRED_RESPONSE_MISSING", questionnaire_type, version_id, question.id))
+                    continue
+                if response.response_status != "answered":
+                    issues.append(RiskInputValidationIssue("RESPONSE_NOT_ANSWERED", questionnaire_type, version_id, question.id, response.id))
+                    continue
+                if not self._answer_matches_type(question.response_type, response.answer_value):
+                    issues.append(RiskInputValidationIssue("INVALID_ANSWER_VALUE", questionnaire_type, version_id, question.id, response.id))
+                    continue
+                if question.response_type == "single_select":
+                    if self._match_answer_to_option(options_by_question.get(question.id, []), response.answer_value) is None:
+                        issues.append(RiskInputValidationIssue("SELECTED_OPTION_NOT_RESOLVED", questionnaire_type, version_id, question.id, response.id))
+                elif question.response_type == "multi_select":
+                    issues.append(RiskInputValidationIssue("UNSUPPORTED_MULTI_SELECT_CONTRACT", questionnaire_type, version_id, question.id, response.id))
+
+        return RiskInputValidationResult(intake_version_id, triage_version_id, issues)
+
     async def load_active_triage_question_responses(
         self,
         session: AsyncSession,
         assessment_id: uuid.UUID,
     ) -> TriagedQuestionLoadResult:
-        version = await self._get_latest_active_questionnaire_version(session, QuestionnaireType.TRIAGE.value)
-
-        if version is None:
-            return TriagedQuestionLoadResult(question_responses=[], required_triage_question_count=0)
-
-        questions = (
-            await session.execute(
-                select(QuestionDefinition)
-                .where(
-                    QuestionDefinition.questionnaire_version_id == version.id,
-                    QuestionDefinition.response_type.in_(SCORABLE_RESPONSE_TYPES),
-                )
-                .order_by(QuestionDefinition.question_order.asc(), QuestionDefinition.id.asc())
-            )
-        ).scalars().all()
-
-        if not questions:
-            return TriagedQuestionLoadResult(question_responses=[], required_triage_question_count=0)
-
-        question_ids = [question.id for question in questions]
-        question_by_id = {question.id: question for question in questions}
-
-        responses = (
-            await session.execute(
-                select(AssessmentResponse)
-                .where(
-                    AssessmentResponse.assessment_id == assessment_id,
-                    AssessmentResponse.question_id.in_(question_ids),
-                )
-                .order_by(AssessmentResponse.created_at.asc(), AssessmentResponse.id.asc())
-            )
-        ).scalars().all()
-
-        if not responses:
-            return TriagedQuestionLoadResult(
-                question_responses=[],
-                required_triage_question_count=sum(1 for question in questions if question.is_required),
-            )
-
-        options = (
-            await session.execute(
-                select(QuestionOption)
-                .where(QuestionOption.question_id.in_(question_ids))
-                .order_by(QuestionOption.display_order.asc(), QuestionOption.id.asc())
-            )
-        ).scalars().all()
-
-        options_by_question: dict[uuid.UUID, list[QuestionOption]] = defaultdict(list)
-        for option in options:
-            options_by_question[option.question_id].append(option)
-
-        resolved_questions: list[TriagedQuestionResponse] = []
-        unresolved_response_ids: list[uuid.UUID] = []
-
-        for response in responses:
-            question = question_by_id.get(response.question_id)
-            if question is None:
-                continue
-
-            if response.response_status != "answered":
-                continue
-
-            candidate_values = self._extract_candidate_values(response.answer_value)
-            if not candidate_values:
-                unresolved_response_ids.append(response.id)
-                continue
-
-            selected_option = self._match_selected_option(options_by_question[question.id], candidate_values)
-
-            if selected_option is None:
-                unresolved_response_ids.append(response.id)
-                continue
-
-            if question.question_weight is None or selected_option.risk_weight is None or selected_option.risk_band is None:
-                unresolved_response_ids.append(response.id)
-                continue
-
-            weighted_options = [option for option in options_by_question[question.id] if option.risk_weight is not None]
-            if not weighted_options:
-                unresolved_response_ids.append(response.id)
-                continue
-
-            question_weight = int(question.question_weight)
-            option_weight = float(selected_option.risk_weight)
-            max_option_weight = max(float(option.risk_weight) for option in weighted_options)
-            weighted_score = question_weight * option_weight
-            max_weighted_score = question_weight * max_option_weight
-            resolved_questions.append(
-                TriagedQuestionResponse(
-                    question_code=question.question_code,
-                    question_id=question.id,
-                    response_id=response.id,
-                    selected_option_id=selected_option.id,
-                    selected_option_code=selected_option.option_code,
-                    question_text=question.question_text,
-                    risk_domain=question.risk_domain or "",
-                    is_required=question.is_required,
-                    why_it_matters=question.why_it_matters or "",
-                    selected_option_label=selected_option.option_label,
-                    question_weight=question_weight,
-                    option_weight=option_weight,
-                    weighted_score=weighted_score,
-                    max_option_weight=max_option_weight,
-                    max_weighted_score=max_weighted_score,
-                    risk_level=RiskLevel(selected_option.risk_band),
-                    risk_signal=selected_option.risk_signal or "",
-                    confidence=1.0,
-                )
-            )
-
-        return TriagedQuestionLoadResult(
-            question_responses=resolved_questions,
-            required_triage_question_count=sum(1 for question in questions if question.is_required),
-            unresolved_response_ids=unresolved_response_ids,
+        version_id, version_issues = await self.resolve_represented_questionnaire_version(
+            session, assessment_id, QuestionnaireType.TRIAGE.value
         )
+        if version_id is None:
+            return TriagedQuestionLoadResult([], 0, [], version_issues)
+
+        questions = (await session.execute(
+            select(QuestionDefinition).where(
+                QuestionDefinition.questionnaire_version_id == version_id,
+                QuestionDefinition.is_visible.is_(True),
+                QuestionDefinition.question_weight.is_not(None),
+            ).order_by(QuestionDefinition.question_order.asc(), QuestionDefinition.id.asc())
+        )).scalars().all()
+        if not questions:
+            issue = RiskInputValidationIssue("NO_SCORABLE_TRIAGE_QUESTIONS", QuestionnaireType.TRIAGE.value, version_id)
+            return TriagedQuestionLoadResult([], 0, [], [issue])
+
+        question_ids = [q.id for q in questions]
+        responses = (await session.execute(
+            select(AssessmentResponse).where(
+                AssessmentResponse.assessment_id == assessment_id,
+                AssessmentResponse.question_id.in_(question_ids),
+            )
+        )).scalars().all()
+        response_by_question = {r.question_id: r for r in responses}
+        options_by_question = await self._load_options_by_question(session, question_ids)
+        resolved: list[TriagedQuestionResponse] = []
+        unresolved: list[uuid.UUID] = []
+        issues: list[RiskInputValidationIssue] = []
+
+        for question in questions:
+            response = response_by_question.get(question.id)
+            if response is None or response.response_status != "answered":
+                issues.append(RiskInputValidationIssue("SCORABLE_RESPONSE_MISSING", QuestionnaireType.TRIAGE.value, version_id, question.id, response.id if response else None))
+                continue
+            if question.response_type == "multi_select":
+                issues.append(RiskInputValidationIssue("UNSUPPORTED_MULTI_SELECT_CONTRACT", QuestionnaireType.TRIAGE.value, version_id, question.id, response.id))
+                unresolved.append(response.id)
+                continue
+            if question.response_type != "single_select":
+                issues.append(RiskInputValidationIssue("INVALID_ANSWER_VALUE", QuestionnaireType.TRIAGE.value, version_id, question.id, response.id))
+                unresolved.append(response.id)
+                continue
+            selected = self._match_answer_to_option(options_by_question.get(question.id, []), response.answer_value)
+            if selected is None:
+                issues.append(RiskInputValidationIssue("SELECTED_OPTION_NOT_RESOLVED", QuestionnaireType.TRIAGE.value, version_id, question.id, response.id))
+                unresolved.append(response.id)
+                continue
+            if selected.risk_weight is None:
+                issues.append(RiskInputValidationIssue("OPTION_RISK_WEIGHT_MISSING", QuestionnaireType.TRIAGE.value, version_id, question.id, response.id))
+                unresolved.append(response.id)
+                continue
+            if selected.risk_band is None:
+                issues.append(RiskInputValidationIssue("OPTION_RISK_BAND_MISSING", QuestionnaireType.TRIAGE.value, version_id, question.id, response.id))
+                unresolved.append(response.id)
+                continue
+            if selected.risk_band not in {"low", "medium", "high", "critical"}:
+                issues.append(RiskInputValidationIssue("OPTION_RISK_BAND_INVALID", QuestionnaireType.TRIAGE.value, version_id, question.id, response.id))
+                unresolved.append(response.id)
+                continue
+            weighted = [o for o in options_by_question.get(question.id, []) if o.risk_weight is not None]
+            if not weighted:
+                issues.append(RiskInputValidationIssue("OPTION_RISK_WEIGHT_MISSING", QuestionnaireType.TRIAGE.value, version_id, question.id, response.id))
+                unresolved.append(response.id)
+                continue
+            qw = int(question.question_weight)
+            ow = float(selected.risk_weight)
+            max_ow = max(float(o.risk_weight) for o in weighted)
+            resolved.append(TriagedQuestionResponse(
+                question_code=question.question_code, question_id=question.id, response_id=response.id,
+                selected_option_id=selected.id, selected_option_code=selected.option_code,
+                question_text=question.question_text, risk_domain=question.risk_domain or "",
+                is_required=question.is_required, why_it_matters=question.why_it_matters or "",
+                selected_option_label=selected.option_label, question_weight=qw, option_weight=ow,
+                weighted_score=qw * ow, max_option_weight=max_ow, max_weighted_score=qw * max_ow,
+                risk_level=RiskLevel(selected.risk_band), risk_signal=selected.risk_signal or "", confidence=1.0,
+            ))
+        return TriagedQuestionLoadResult(resolved, len(questions), unresolved, issues)
 
     async def load_required_response_completeness(
         self,
@@ -369,59 +452,50 @@ class AssessmentRepository:
         assessment_id: UUID | str,
         questionnaire_type: str,
     ) -> ResponseCompletenessRecord:
-        version = await self._get_latest_active_questionnaire_version(session, questionnaire_type)
-        if version is None:
-            return ResponseCompletenessRecord(
-                questionnaire_type=questionnaire_type,
-                required_question_count=0,
-                answered_required_question_count=0,
-                unresolved_required_response_ids=[],
+        version_id, _ = await self.resolve_represented_questionnaire_version(session, assessment_id, questionnaire_type)
+        if version_id is None:
+            return ResponseCompletenessRecord(questionnaire_type, 1, 0, [])
+        questions = (await session.execute(
+            select(QuestionDefinition).where(
+                QuestionDefinition.questionnaire_version_id == version_id,
+                QuestionDefinition.is_visible.is_(True),
+                QuestionDefinition.is_required.is_(True),
             )
-
-        questions = (
-            await session.execute(
-                select(QuestionDefinition).where(
-                    QuestionDefinition.questionnaire_version_id == version.id,
-                    QuestionDefinition.is_visible.is_(True),
-                    QuestionDefinition.is_required.is_(True),
-                )
-            )
-        ).scalars().all()
+        )).scalars().all()
         if not questions:
-            return ResponseCompletenessRecord(
-                questionnaire_type=questionnaire_type,
-                required_question_count=0,
-                answered_required_question_count=0,
-                unresolved_required_response_ids=[],
+            return ResponseCompletenessRecord(questionnaire_type, 1, 0, [])
+        responses = (await session.execute(
+            select(AssessmentResponse).where(
+                AssessmentResponse.assessment_id == self._coerce_uuid(assessment_id),
+                AssessmentResponse.question_id.in_([q.id for q in questions]),
             )
-
-        question_ids = [question.id for question in questions]
-        responses = (
-            await session.execute(
-                select(AssessmentResponse).where(
-                    AssessmentResponse.assessment_id == self._coerce_uuid(assessment_id),
-                    AssessmentResponse.question_id.in_(question_ids),
-                )
-            )
-        ).scalars().all()
-        latest_by_question = {response.question_id: response for response in responses}
+        )).scalars().all()
+        by_question = {r.question_id: r for r in responses}
         answered = 0
         unresolved: list[UUID] = []
         for question in questions:
-            response = latest_by_question.get(question.id)
+            response = by_question.get(question.id)
             if response is None or response.response_status != "answered":
                 continue
-            if not self._extract_candidate_values(response.answer_value):
+            if not self._answer_matches_type(question.response_type, response.answer_value):
                 unresolved.append(response.id)
                 continue
             answered += 1
+        return ResponseCompletenessRecord(questionnaire_type, len(questions), answered, unresolved)
 
-        return ResponseCompletenessRecord(
-            questionnaire_type=questionnaire_type,
-            required_question_count=len(questions),
-            answered_required_question_count=answered,
-            unresolved_required_response_ids=unresolved,
-        )
+    @classmethod
+    def _answer_matches_type(cls, response_type: str, value: object | None) -> bool:
+        if response_type in {"text", "date"}:
+            return isinstance(value, str) and bool(value.strip())
+        if response_type == "number":
+            return isinstance(value, (int, float)) and not isinstance(value, bool)
+        if response_type == "boolean":
+            return isinstance(value, bool)
+        if response_type == "single_select":
+            return isinstance(value, (str, dict)) and bool(cls._extract_candidate_values(value))
+        if response_type == "multi_select":
+            return isinstance(value, list) and bool(value)
+        return False
 
     @staticmethod
     def _extract_candidate_values(answer_value: object | None) -> list[str]:
@@ -430,7 +504,7 @@ class AssessmentRepository:
 
         if isinstance(answer_value, dict):
             values: list[str] = []
-            for key in ("optionCode", "option_code", "selectedResponse", "optionLabel", "option_label", "value"):
+            for key in ("selectedOptionId", "optionCode", "option_code", "selectedResponse", "optionLabel", "option_label", "value"):
                 values.extend(AssessmentRepository._coerce_strings(answer_value.get(key)))
             return list(dict.fromkeys(values))
 

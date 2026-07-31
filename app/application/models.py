@@ -36,6 +36,7 @@ class TriagedQuestionLoadResult:
     question_responses: list[TriagedQuestionResponse]
     required_triage_question_count: int
     unresolved_response_ids: list[uuid.UUID] = field(default_factory=list)
+    validation_issues: list[object] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

@@ -117,12 +117,6 @@ class CommandProcessor:
                     )
                     self._raise_if_lease_lost(envelope, lease_execution)
                     lease_execution.stop_event.set()
-                    await self._tasks.mark_succeeded(
-                        session,
-                        task_id=envelope.task_id,
-                        attempt=envelope.attempt,
-                        lease_owner=self._settings.worker_instance_id,
-                    )
                     await self._outbox.add_result(
                         session,
                         event_type=execution_result.event_type,
