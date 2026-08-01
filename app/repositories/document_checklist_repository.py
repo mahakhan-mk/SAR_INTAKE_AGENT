@@ -310,6 +310,47 @@ class DocumentChecklistRepository:
         ).scalars().all()
         return {review.document_type: review for review in reviews}
 
+    async def list_latest_non_null_item_reviews_for_run_items(
+        self,
+        session: AsyncSession,
+        *,
+        assessment_id: UUID | str,
+        item_ids: Sequence[UUID | str],
+    ) -> dict[str, DocumentChecklistItemReview]:
+        normalized_item_ids = [self._coerce_uuid(item_id) for item_id in item_ids]
+        if not normalized_item_ids:
+            return {}
+
+        ranked_reviews = (
+            select(
+                DocumentChecklistItemReview.id.label("review_id"),
+                DocumentChecklistItemReview.document_type.label("document_type"),
+                func.row_number()
+                .over(
+                    partition_by=DocumentChecklistItemReview.source_item_id,
+                    order_by=(
+                        DocumentChecklistItemReview.created_at.desc(),
+                        DocumentChecklistItemReview.id.desc(),
+                    ),
+                )
+                .label("review_rank"),
+            )
+            .where(
+                DocumentChecklistItemReview.assessment_id == self._coerce_uuid(assessment_id),
+                DocumentChecklistItemReview.source_item_id.in_(normalized_item_ids),
+                DocumentChecklistItemReview.reviewer_verdict.is_not(None),
+            )
+            .subquery()
+        )
+        reviews = (
+            await session.execute(
+                select(DocumentChecklistItemReview)
+                .join(ranked_reviews, ranked_reviews.c.review_id == DocumentChecklistItemReview.id)
+                .where(ranked_reviews.c.review_rank == 1)
+            )
+        ).scalars().all()
+        return {review.document_type: review for review in reviews}
+
     async def get_item_review_for_run_items(
         self,
         session: AsyncSession,

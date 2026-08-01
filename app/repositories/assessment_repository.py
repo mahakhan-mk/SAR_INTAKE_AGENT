@@ -376,8 +376,6 @@ class AssessmentRepository:
         questions = (await session.execute(
             select(QuestionDefinition).where(
                 QuestionDefinition.questionnaire_version_id == version_id,
-                QuestionDefinition.is_visible.is_(True),
-                QuestionDefinition.question_weight.is_not(None),
             ).order_by(QuestionDefinition.question_order.asc(), QuestionDefinition.id.asc())
         )).scalars().all()
         if not questions:
@@ -425,6 +423,10 @@ class AssessmentRepository:
                 continue
             if selected.risk_band not in {"low", "medium", "high", "critical"}:
                 issues.append(RiskInputValidationIssue("OPTION_RISK_BAND_INVALID", QuestionnaireType.TRIAGE.value, version_id, question.id, response.id))
+                unresolved.append(response.id)
+                continue
+            if question.question_weight is None:
+                issues.append(RiskInputValidationIssue("QUESTION_WEIGHT_MISSING", QuestionnaireType.TRIAGE.value, version_id, question.id, response.id))
                 unresolved.append(response.id)
                 continue
             weighted = [o for o in options_by_question.get(question.id, []) if o.risk_weight is not None]

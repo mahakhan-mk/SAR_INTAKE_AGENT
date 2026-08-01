@@ -58,6 +58,14 @@ class _AssessmentRepository:
     async def get_assessment(self, session, assessment_id):
         return SimpleNamespace(id=assessment_id) if self.exists else None
 
+    async def validate_risk_inputs(self, session, assessment_id):
+        issues = []
+        if not self.complete:
+            issues.append(SimpleNamespace(reason_code="REQUIRED_RESPONSE_MISSING", question_id=uuid4(), response_id=None))
+        if self.triage_unresolved:
+            issues.append(SimpleNamespace(reason_code="SELECTED_OPTION_NOT_RESOLVED", question_id=uuid4(), response_id=uuid4()))
+        return SimpleNamespace(issues=issues)
+
     async def load_required_response_completeness(self, session, assessment_id, questionnaire_type):
         self.loaded_types.append(questionnaire_type)
         return _Completeness(is_complete=self.complete)
@@ -68,6 +76,7 @@ class _AssessmentRepository:
             question_responses=[required_response],
             required_triage_question_count=1,
             unresolved_response_ids=[uuid4()] if self.triage_unresolved else [],
+            validation_issues=[],
         )
 
 

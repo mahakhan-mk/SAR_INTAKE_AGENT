@@ -134,6 +134,12 @@ class CommandProcessor:
                         consumer_name=self._settings.consumer_name,
                         message_id=envelope.message_id,
                     )
+                    await self._tasks.mark_succeeded(
+                        session,
+                        task_id=envelope.task_id,
+                        attempt=envelope.attempt,
+                        lease_owner=self._settings.worker_instance_id,
+                    )
             except SQLAlchemyError:
                 raise
             except TaskLeaseUnavailable:

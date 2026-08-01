@@ -70,6 +70,7 @@ class _DocumentChecklistReadStateBuilder:
         assessment_id: UUID,
         run_record,
         reviews_by_type: dict[str, object] | None = None,
+        current_document_ids_by_type: dict[str, list[UUID]] | None = None,
     ) -> DocumentChecklistReadState:
         latest_reviews = reviews_by_type
         if latest_reviews is None:
@@ -85,11 +86,18 @@ class _DocumentChecklistReadStateBuilder:
 
         item_states: list[DocumentChecklistItemReadState] = []
         for item in run_record.items:
+            detected_document_id = None
+            use_snapshot_document = current_document_ids_by_type is None
+            if current_document_ids_by_type is not None:
+                document_ids = current_document_ids_by_type.get(item.document_type, [])
+                detected_document_id = document_ids[0] if document_ids else None
             item_states.append(
                 self._build_item_read_state_from_snapshot(
                     item=item,
                     snapshot=snapshot_by_type.get(item.document_type, {}),
                     review=latest_reviews.get(item.document_type),
+                    detected_document_id=detected_document_id,
+                    use_snapshot_document=use_snapshot_document,
                 )
             )
 
@@ -121,12 +129,15 @@ class _DocumentChecklistReadStateBuilder:
         item: DocumentChecklistItem,
         snapshot: dict[str, object],
         review,
+        detected_document_id: UUID | None = None,
+        use_snapshot_document: bool = True,
     ) -> DocumentChecklistItemReadState:
         certification = snapshot.get("certification") if isinstance(snapshot, dict) else None
         if not isinstance(certification, dict):
             certification = {}
 
-        detected_document_id = self._first_snapshot_document_id(snapshot)
+        if use_snapshot_document:
+            detected_document_id = self._first_snapshot_document_id(snapshot)
         reviewer_verdict = review.reviewer_verdict if review is not None else None
         return DocumentChecklistItemReadState(
             item=item,
@@ -285,41 +296,35 @@ class DocumentChecklistExecutionService(_DocumentChecklistReadStateBuilder):
         if run_record is None:
             raise DocumentChecklistRunNotFoundError()
 
-        current_reviews = await self.checklist_repository.list_latest_item_reviews_for_run_items(
+        current_reviews = await self.checklist_repository.list_latest_non_null_item_reviews_for_run_items(
             session,
             assessment_id=normalized_assessment_id,
             item_ids=[item.id for item in run_record.items],
         )
+        current_documents = await self.document_repository.list_active_assessment_documents(
+            session,
+            normalized_assessment_id,
+        )
+        current_document_ids_by_type = self._document_ids_by_system_type(current_documents)
         state = await self._build_read_state(
             session,
             normalized_assessment_id,
             run_record,
             reviews_by_type=current_reviews,
+            current_document_ids_by_type=current_document_ids_by_type,
         )
-        required_types = {item.document_type for item in run_record.items}
-        saved_decision_types = {
-            document_type
-            for document_type, review in current_reviews.items()
-            if review.reviewer_verdict is not None
-        }
-        missing_review_types = sorted(required_types - saved_decision_types)
         missing_required_documents = sorted(
             item.item.document_type
             for item in state.items
             if item.effective_verdict == ChecklistVerdict.REQUIRED.value
-            and item.detected_document_id is None
+            and not current_document_ids_by_type.get(item.item.document_type)
         )
 
-        if missing_review_types or missing_required_documents:
+        if missing_required_documents:
             reasons: list[str] = []
-            if missing_review_types:
-                reasons.append(
-                    "missing saved reviewer decisions for " + ", ".join(missing_review_types)
-                )
-            if missing_required_documents:
-                reasons.append(
-                    "required documents are missing for " + ", ".join(missing_required_documents)
-                )
+            reasons.append(
+                "required documents are missing for " + ", ".join(missing_required_documents)
+            )
             await self.checklist_repository.update_run_status(
                 session,
                 run=run_record.run,
@@ -331,6 +336,7 @@ class DocumentChecklistExecutionService(_DocumentChecklistReadStateBuilder):
                 normalized_assessment_id,
                 run_record,
                 reviews_by_type=current_reviews,
+                current_document_ids_by_type=current_document_ids_by_type,
             )
 
         completed_status = (
@@ -350,6 +356,7 @@ class DocumentChecklistExecutionService(_DocumentChecklistReadStateBuilder):
             normalized_assessment_id,
             run_record,
             reviews_by_type=current_reviews,
+            current_document_ids_by_type=current_document_ids_by_type,
         )
 
     async def _generate_summary(
@@ -403,6 +410,19 @@ class DocumentChecklistExecutionService(_DocumentChecklistReadStateBuilder):
                 continue
             detected_documents.setdefault(document.effective_document_type, []).append(document.document.id)
         return detected_documents
+
+    @staticmethod
+    def _document_ids_by_system_type(documents: list[object]) -> dict[str, list[uuid.UUID]]:
+        document_ids_by_type: dict[str, list[uuid.UUID]] = {}
+        supported_types = {member.value for member in DocumentType}
+        for document in documents:
+            if getattr(document, "deleted_at", None) is not None:
+                continue
+            system_document_type = getattr(document, "system_document_type", None)
+            if system_document_type not in supported_types:
+                continue
+            document_ids_by_type.setdefault(system_document_type, []).append(document.id)
+        return document_ids_by_type
 
     @staticmethod
     def _certification_snapshot(
