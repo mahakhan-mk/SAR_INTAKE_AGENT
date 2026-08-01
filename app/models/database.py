@@ -213,7 +213,7 @@ class AssessmentDocument(Base):
 
 
 class InitialSarReport(Base):
-    __tablename__ = "initial_sar_report"
+    __tablename__ = "initial_sar_reports"
     __table_args__ = (
         CheckConstraint("file_size_bytes > 0", name="initial_sar_report_file_size_check"),
         CheckConstraint("report_version >= 1", name="initial_sar_report_report_version_check"),
