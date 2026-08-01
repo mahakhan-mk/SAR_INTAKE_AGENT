@@ -31,7 +31,9 @@ class ClaimedTask:
 
 
 class TaskLeaseUnavailable(RuntimeError):
-    pass
+    def __init__(self, message: str, *, task: ClaimedTask | None = None) -> None:
+        super().__init__(message)
+        self.task = task
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,7 +139,8 @@ class WorkflowTaskExecutionRepository:
             if lease_expires_at is not None and lease_expires_at > now:
                 raise TaskLeaseUnavailable(
                     f"task {task.id} is leased by {task.lease_owner} until "
-                    f"{lease_expires_at.isoformat()}"
+                    f"{lease_expires_at.isoformat()}",
+                    task=_claimed(task),
                 )
         elif task.status in {"queued", "retry", "pending"}:
             expected_attempt = task.attempt_count + 1

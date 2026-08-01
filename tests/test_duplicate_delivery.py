@@ -9,6 +9,7 @@ from uuid import UUID, uuid4
 import pytest
 import pytest_asyncio
 from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import DATABASE_SCHEMA_TOKEN, Settings
@@ -22,7 +23,11 @@ from app.models.database import (
     WorkflowTask,
 )
 from app.worker.handlers import CommandExecutionResult
-from app.worker.processor import CommandProcessor, InfrastructureFailure, NonRetryableCommandFailure
+from app.worker.processor import (
+    CommandAlreadyInFlight,
+    CommandProcessor,
+    NonRetryableCommandFailure,
+)
 
 
 NOW = datetime(2026, 7, 29, 12, 0, tzinfo=UTC)
@@ -75,6 +80,12 @@ def _settings(*, worker_instance_id: str = "host-a:123:worker-a") -> Settings:
         azure_openai_timeout_seconds=30.0,
         azure_openai_api_version=None,
     )
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is None or value.tzinfo is not None:
+        return value
+    return value.replace(tzinfo=UTC)
 
 
 async def _insert_task(
@@ -155,6 +166,19 @@ class _FakeMessage:
 
     async def nack(self, *, requeue: bool) -> None:
         self.nacked.append(requeue)
+
+
+class _RecordingRetryExchange:
+    def __init__(self) -> None:
+        self.published = 0
+
+    async def publish(self, *args, **kwargs) -> None:
+        self.published += 1
+
+
+class _FailingOutbox:
+    async def add_result(self, *args, **kwargs):
+        raise SQLAlchemyError("simulated outbox failure")
 
 
 def _envelope(
@@ -304,11 +328,103 @@ async def test_concurrent_duplicate_delivery_creates_one_result(
 
     outbox_count, processed_count, questionnaire_count = await _counts(session_factory)
     assert first_result is True
-    assert isinstance(second_exception, InfrastructureFailure)
+    assert isinstance(second_exception, CommandAlreadyInFlight)
     assert calls == 1
     assert outbox_count == 1
     assert processed_count == 1
     assert questionnaire_count == 1
+
+
+@pytest.mark.asyncio
+async def test_active_lease_duplicate_delivery_is_acked_without_retry_or_task_mutation(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    lease_expires_at = datetime.now(UTC) + timedelta(seconds=30)
+    await _insert_task(
+        session_factory,
+        status="running",
+        attempt_count=1,
+        lease_owner="host-b:456:worker-b",
+        lease_expires_at=lease_expires_at,
+    )
+    calls = 0
+
+    async def handler(session: AsyncSession, envelope: MessageEnvelope) -> CommandExecutionResult:
+        nonlocal calls
+        _ = session, envelope
+        calls += 1
+        return CommandExecutionResult("assessment.risk.completed", {})
+
+    retry_exchange = _RecordingRetryExchange()
+    processor = _processor(session_factory, handler)
+    consumer = AssessmentCommandConsumer(SimpleNamespace(), processor, _settings())
+    consumer._retry_exchange = retry_exchange
+    message = _FakeMessage(_envelope(message_id=uuid4(), attempt=1))
+
+    await consumer._consume(message)
+
+    async with session_factory() as session:
+        task = (
+            await session.execute(select(WorkflowTask).where(WorkflowTask.id == TASK_ID))
+        ).scalar_one()
+    outbox_count, processed_count, questionnaire_count = await _counts(session_factory)
+    assert calls == 0
+    assert message.acked == 1
+    assert message.rejected == []
+    assert message.nacked == []
+    assert retry_exchange.published == 0
+    assert task.status == "running"
+    assert task.attempt_count == 1
+    assert task.lease_owner == "host-b:456:worker-b"
+    assert _as_utc(task.lease_expires_at) == lease_expires_at
+    assert outbox_count == 0
+    assert processed_count == 0
+    assert questionnaire_count == 0
+
+
+@pytest.mark.asyncio
+async def test_post_claim_infrastructure_failure_acks_and_leaves_running_for_reconciliation(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await _insert_task(session_factory)
+
+    async def handler(session: AsyncSession, envelope: MessageEnvelope) -> CommandExecutionResult:
+        _ = envelope
+        session.add(
+            QuestionnaireVersion(
+                id=uuid4(),
+                questionnaire_type="risk",
+                version="rolled-back",
+                status="draft",
+            )
+        )
+        return CommandExecutionResult("assessment.risk.completed", {})
+
+    retry_exchange = _RecordingRetryExchange()
+    processor = _processor(session_factory, handler)
+    processor._outbox = _FailingOutbox()
+    consumer = AssessmentCommandConsumer(SimpleNamespace(), processor, _settings())
+    consumer._retry_exchange = retry_exchange
+    message = _FakeMessage(_envelope(message_id=uuid4(), attempt=1))
+
+    await consumer._consume(message)
+
+    async with session_factory() as session:
+        task = (
+            await session.execute(select(WorkflowTask).where(WorkflowTask.id == TASK_ID))
+        ).scalar_one()
+    outbox_count, processed_count, questionnaire_count = await _counts(session_factory)
+    assert message.acked == 1
+    assert message.rejected == []
+    assert message.nacked == []
+    assert retry_exchange.published == 0
+    assert task.status == "running"
+    assert task.attempt_count == 1
+    assert task.lease_owner == _settings().worker_instance_id
+    assert task.lease_expires_at is not None
+    assert outbox_count == 0
+    assert processed_count == 0
+    assert questionnaire_count == 0
 
 
 @pytest.mark.asyncio

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from datetime import UTC, datetime
 import logging
 
 from sqlalchemy.exc import SQLAlchemyError
@@ -32,6 +33,18 @@ logger = logging.getLogger(__name__)
 
 
 class InfrastructureFailure(RuntimeError):
+    pass
+
+
+class PreClaimInfrastructureFailure(InfrastructureFailure):
+    pass
+
+
+class PostClaimInfrastructureFailure(InfrastructureFailure):
+    pass
+
+
+class CommandAlreadyInFlight(RuntimeError):
     pass
 
 
@@ -85,9 +98,11 @@ class CommandProcessor:
         try:
             claimed = await self._claim_task(envelope)
         except TaskLeaseUnavailable as exc:
-            raise InfrastructureFailure(str(exc)) from exc
+            if _is_active_in_flight_claim(envelope, exc):
+                raise CommandAlreadyInFlight(str(exc)) from exc
+            raise PreClaimInfrastructureFailure(str(exc)) from exc
         except SQLAlchemyError as exc:
-            raise InfrastructureFailure(str(exc)) from exc
+            raise PreClaimInfrastructureFailure(str(exc)) from exc
         except (LookupError, ValueError) as exc:
             raise NonRetryableCommandFailure(str(exc)) from exc
         if not claimed:
@@ -177,9 +192,9 @@ class CommandProcessor:
                 await execution_result.committed()
             return True
         except TaskLeaseUnavailable as exc:
-            raise InfrastructureFailure(str(exc)) from exc
+            raise PostClaimInfrastructureFailure(str(exc)) from exc
         except SQLAlchemyError as exc:
-            raise InfrastructureFailure(str(exc)) from exc
+            raise PostClaimInfrastructureFailure(str(exc)) from exc
         except (LookupError, ValueError) as exc:
             raise NonRetryableCommandFailure(str(exc)) from exc
         finally:
@@ -388,3 +403,32 @@ def _fallback_failure_summary(exc: Exception) -> str:
     if isinstance(exc, SQLAlchemyError):
         return "Database operation failed while processing the assessment command."
     return "Assessment command processing failed."
+
+
+def _is_active_in_flight_claim(
+    envelope: MessageEnvelope,
+    exc: TaskLeaseUnavailable,
+) -> bool:
+    task = exc.task
+    if task is None:
+        return False
+    lease_expires_at = _as_utc(task.lease_expires_at)
+    return (
+        envelope.task_id is not None
+        and task.id == envelope.task_id
+        and task.workflow_id == envelope.workflow_id
+        and task.task_type == envelope.message_type
+        and task.expected_workflow_version == envelope.expected_workflow_version
+        and dict(task.input_payload) == dict(envelope.payload)
+        and task.status == "running"
+        and task.attempt_count == envelope.attempt
+        and task.lease_owner is not None
+        and lease_expires_at is not None
+        and lease_expires_at > datetime.now(UTC)
+    )
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is None or value.tzinfo is not None:
+        return value
+    return value.replace(tzinfo=UTC)

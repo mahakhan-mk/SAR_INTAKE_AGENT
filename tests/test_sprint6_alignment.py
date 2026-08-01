@@ -35,7 +35,12 @@ from app.services.initial_sar_report_generation_service import InitialSarReportG
 from app.services.initial_sar_report_renderer import RenderedInitialSarReport
 from app.services.initial_sar_report_storage import StoredInitialSarReport
 from app.worker.handlers import CommandExecutionResult
-from app.worker.processor import CommandProcessor, InfrastructureFailure, NonRetryableCommandFailure
+from app.worker.processor import (
+    CommandProcessor,
+    InfrastructureFailure,
+    NonRetryableCommandFailure,
+    PreClaimInfrastructureFailure,
+)
 
 
 NOW = datetime(2026, 7, 30, 12, 0, tzinfo=UTC)
@@ -479,7 +484,9 @@ async def test_consumer_permanent_failure_rejects_without_requeue() -> None:
 
 
 @pytest.mark.asyncio
-async def test_consumer_transient_failure_publishes_to_retry_exchange(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_consumer_pre_claim_transient_failure_publishes_to_retry_exchange(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(
         consumer_module,
         "aio_pika",
@@ -490,12 +497,13 @@ async def test_consumer_transient_failure_publishes_to_retry_exchange(monkeypatc
     )
     envelope = _envelope("assessment.report.generate")
     channel = _FakeChannel()
-    message = _FakeIncomingMessage(envelope, channel=channel)
+    message = _FakeIncomingMessage(envelope, channel=SimpleNamespace())
     consumer = AssessmentCommandConsumer(
         SimpleNamespace(),
-        _ProcessorStub(exc=InfrastructureFailure("temporary database outage")),
+        _ProcessorStub(exc=PreClaimInfrastructureFailure("temporary database outage")),
         _settings(),
     )
+    consumer._channels.append(channel)
 
     await consumer._consume(message)
 
@@ -510,15 +518,48 @@ async def test_consumer_transient_failure_publishes_to_retry_exchange(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_consumer_transient_failure_dead_letters_after_retry_limit() -> None:
+async def test_consumer_pre_claim_transient_failure_dead_letters_after_retry_limit() -> None:
     envelope = _envelope("assessment.report.generate")
     settings = _settings(retry_limit=2)
     message = _FakeIncomingMessage(envelope, headers={_RETRY_HEADER: 2})
     consumer = AssessmentCommandConsumer(
         SimpleNamespace(),
-        _ProcessorStub(exc=InfrastructureFailure("temporary database outage")),
+        _ProcessorStub(exc=PreClaimInfrastructureFailure("temporary database outage")),
         settings,
     )
+
+    await consumer._consume(message)
+
+    assert message.acked == 0
+    assert message.rejected == [False]
+    assert message.nacked == []
+
+
+@pytest.mark.asyncio
+async def test_consumer_retry_publish_failure_rejects_without_hot_requeue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        consumer_module,
+        "aio_pika",
+        SimpleNamespace(
+            Message=_FakePublishedMessage,
+            DeliveryMode=SimpleNamespace(PERSISTENT="persistent"),
+        ),
+    )
+
+    class _FailingRetryExchange:
+        async def publish(self, *args, **kwargs) -> None:
+            raise RuntimeError("retry exchange unavailable")
+
+    envelope = _envelope("assessment.report.generate")
+    message = _FakeIncomingMessage(envelope)
+    consumer = AssessmentCommandConsumer(
+        SimpleNamespace(),
+        _ProcessorStub(exc=PreClaimInfrastructureFailure("temporary database outage")),
+        _settings(),
+    )
+    consumer._retry_exchange = _FailingRetryExchange()
 
     await consumer._consume(message)
 

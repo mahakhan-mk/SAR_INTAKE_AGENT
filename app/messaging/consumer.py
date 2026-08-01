@@ -17,9 +17,12 @@ from app.messaging.topology import (
     ASSESSMENT_WORKFLOW_QUEUE_NAME,
 )
 from app.worker.processor import (
+    CommandAlreadyInFlight,
     CommandProcessor,
     InfrastructureFailure,
     NonRetryableCommandFailure,
+    PostClaimInfrastructureFailure,
+    PreClaimInfrastructureFailure,
 )
 
 logger = logging.getLogger(__name__)
@@ -39,6 +42,7 @@ class AssessmentCommandConsumer:
         self._execution_gate = asyncio.Semaphore(1)
         self._channels: list[aio_pika.abc.AbstractChannel] = []
         self._consumers: list[tuple[aio_pika.abc.AbstractQueue, str]] = []
+        self._retry_exchange: aio_pika.abc.AbstractExchange | None = None
 
     async def start(self) -> None:
         if aio_pika is None:
@@ -61,10 +65,16 @@ class AssessmentCommandConsumer:
             except Exception:
                 logger.exception("consumer_channel_close_failed")
         self._channels.clear()
+        self._retry_exchange = None
 
     async def _start_queue(self, queue_name: str) -> None:
         channel = await self._connection.channel()
         await channel.set_qos(prefetch_count=self._settings.command_prefetch_count)
+        if self._retry_exchange is None:
+            self._retry_exchange = await channel.get_exchange(
+                SAR_RETRY_EXCHANGE_NAME,
+                ensure=True,
+            )
         queue = await channel.get_queue(queue_name, ensure=True)
         tag = await queue.consume(self._consume)
         self._channels.append(channel)
@@ -96,6 +106,19 @@ class AssessmentCommandConsumer:
         try:
             async with self._execution_gate:
                 await self._processor.process(envelope)
+        except CommandAlreadyInFlight:
+            logger.info(
+                "command_already_in_flight_acked message_id=%s assessment_id=%s "
+                "workflow_id=%s task_id=%s attempt=%s command=%s",
+                envelope.message_id,
+                envelope.assessment_id,
+                envelope.workflow_id,
+                envelope.task_id,
+                envelope.attempt,
+                envelope.message_type,
+            )
+            await message.ack()
+            return
         except NonRetryableCommandFailure as exc:
             logger.error(
                 "command_rejected message_id=%s assessment_id=%s workflow_id=%s "
@@ -110,9 +133,35 @@ class AssessmentCommandConsumer:
             )
             await message.reject(requeue=False)
             return
+        except PreClaimInfrastructureFailure:
+            logger.exception(
+                "command_pre_claim_infrastructure_failure message_id=%s assessment_id=%s "
+                "workflow_id=%s task_id=%s attempt=%s command=%s",
+                envelope.message_id,
+                envelope.assessment_id,
+                envelope.workflow_id,
+                envelope.task_id,
+                envelope.attempt,
+                envelope.message_type,
+            )
+            await self._retry_or_dead_letter(message, envelope)
+            return
+        except PostClaimInfrastructureFailure:
+            logger.exception(
+                "command_post_claim_infrastructure_failure_acked message_id=%s "
+                "assessment_id=%s workflow_id=%s task_id=%s attempt=%s command=%s",
+                envelope.message_id,
+                envelope.assessment_id,
+                envelope.workflow_id,
+                envelope.task_id,
+                envelope.attempt,
+                envelope.message_type,
+            )
+            await message.ack()
+            return
         except InfrastructureFailure:
             logger.exception(
-                "command_infrastructure_failure message_id=%s assessment_id=%s "
+                "command_unclassified_infrastructure_failure message_id=%s assessment_id=%s "
                 "workflow_id=%s task_id=%s attempt=%s command=%s",
                 envelope.message_id,
                 envelope.assessment_id,
@@ -169,8 +218,7 @@ class AssessmentCommandConsumer:
             await message.reject(requeue=False)
             return
         try:
-            channel = self._channel_for_message(message)
-            exchange = await channel.get_exchange(SAR_RETRY_EXCHANGE_NAME, ensure=True)
+            exchange = await self._retry_exchange_for_publish()
             headers = dict(message.headers or {})
             headers[_RETRY_HEADER] = retries + 1
             await asyncio.wait_for(
@@ -200,7 +248,7 @@ class AssessmentCommandConsumer:
                 envelope.attempt,
                 envelope.message_type,
             )
-            await message.nack(requeue=True)
+            await message.reject(requeue=False)
             return
         logger.warning(
             "command_transport_retry_scheduled message_id=%s assessment_id=%s "
@@ -215,16 +263,16 @@ class AssessmentCommandConsumer:
         )
         await message.ack()
 
-    def _channel_for_message(
-        self,
-        message: aio_pika.IncomingMessage,
-    ) -> aio_pika.abc.AbstractChannel:
-        channel = getattr(message, "channel", None)
-        if channel is not None:
-            return channel
+    async def _retry_exchange_for_publish(self) -> aio_pika.abc.AbstractExchange:
+        if self._retry_exchange is not None:
+            return self._retry_exchange
         if not self._channels:
-            raise RuntimeError("consumer channel is unavailable")
-        return self._channels[0]
+            raise RuntimeError("consumer retry exchange is unavailable")
+        self._retry_exchange = await self._channels[0].get_exchange(
+            SAR_RETRY_EXCHANGE_NAME,
+            ensure=True,
+        )
+        return self._retry_exchange
 
 
 def _retry_count(message: aio_pika.IncomingMessage) -> int:
