@@ -89,6 +89,12 @@ async def _create_run(
     )
 
 
+def _mark_submitted(run, *, submitted_by: str = "analyst@example.com") -> None:
+    run.status = DocumentChecklistRunStatus.SUBMITTED.value
+    run.submitted_at = datetime.now(UTC)
+    run.submitted_by = submitted_by
+
+
 async def _create_document(
     session: AsyncSession,
     *,
@@ -143,6 +149,77 @@ async def _finalize(session: AsyncSession, *, assessment_id: UUID, run_id: UUID)
         assessment_id=assessment_id,
         run_id=run_id,
     )
+
+
+@pytest.mark.asyncio
+async def test_submitted_required_item_with_matching_active_document_and_zero_reviews_completes(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    assessment_id = uuid4()
+    async with session_factory() as session:
+        async with session.begin():
+            await _create_assessment(session, assessment_id)
+            run_record = await _create_run(
+                session,
+                assessment_id=assessment_id,
+                base_verdicts={DocumentType.SOC2_TYPE_II.value: ChecklistVerdict.REQUIRED.value},
+            )
+            _mark_submitted(run_record.run)
+            document = await _create_document(
+                session,
+                assessment_id=assessment_id,
+                document_type=AssessmentDocumentSystemType.SOC2_TYPE_II,
+            )
+
+            state = await _finalize(session, assessment_id=assessment_id, run_id=run_record.run.id)
+
+        assert state.run.status == DocumentChecklistRunStatus.COMPLETED.value
+        assert state.run.error_summary is None
+        soc2_state = next(item for item in state.items if item.item.document_type == DocumentType.SOC2_TYPE_II.value)
+        assert soc2_state.effective_verdict == ChecklistVerdict.REQUIRED.value
+        assert soc2_state.reviewer_verdict is None
+        assert soc2_state.detected_document_id == document.id
+
+
+@pytest.mark.asyncio
+async def test_submitted_finalization_uses_partial_reviewer_overrides_with_base_fallback(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    assessment_id = uuid4()
+    async with session_factory() as session:
+        async with session.begin():
+            await _create_assessment(session, assessment_id)
+            run_record = await _create_run(
+                session,
+                assessment_id=assessment_id,
+                base_verdicts={
+                    DocumentType.SOC2_TYPE_II.value: ChecklistVerdict.REQUIRED.value,
+                    DocumentType.ISO_27001.value: ChecklistVerdict.REQUIRED.value,
+                },
+            )
+            _mark_submitted(run_record.run)
+            await _create_document(
+                session,
+                assessment_id=assessment_id,
+                document_type=AssessmentDocumentSystemType.SOC2_TYPE_II,
+            )
+            await _append_review(
+                session,
+                assessment_id=assessment_id,
+                source_item_id=run_record.items[1].id,
+                document_type=DocumentType.ISO_27001,
+                reviewer_verdict=ChecklistVerdict.RECOMMENDED,
+            )
+
+            state = await _finalize(session, assessment_id=assessment_id, run_id=run_record.run.id)
+
+        assert state.run.status == DocumentChecklistRunStatus.COMPLETED.value
+        soc2_state = next(item for item in state.items if item.item.document_type == DocumentType.SOC2_TYPE_II.value)
+        iso_state = next(item for item in state.items if item.item.document_type == DocumentType.ISO_27001.value)
+        assert soc2_state.effective_verdict == ChecklistVerdict.REQUIRED.value
+        assert soc2_state.reviewer_verdict is None
+        assert iso_state.effective_verdict == ChecklistVerdict.RECOMMENDED.value
+        assert iso_state.reviewer_verdict == ChecklistVerdict.RECOMMENDED.value
 
 
 @pytest.mark.asyncio

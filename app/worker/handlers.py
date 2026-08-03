@@ -107,16 +107,16 @@ class AssessmentCommandHandlers:
         envelope: MessageEnvelope,
     ) -> CommandExecutionResult:
         payload = validate_command_payload(envelope.message_type, envelope.payload)
-        await self._require_checklist_run_review(
+        run_id = UUID(str(payload["checklistRunId"]))
+        await self._require_submitted_checklist_run(
             session,
             assessment_id=envelope.assessment_id,
-            run_id=UUID(str(payload["checklistRunId"])),
-            review_id=UUID(str(payload["reviewId"])),
+            run_id=run_id,
         )
         state = await self.checklist_service.finalize_checklist(
             session,
             assessment_id=envelope.assessment_id,
-            run_id=UUID(str(payload["checklistRunId"])),
+            run_id=run_id,
         )
         if state.run.status == DocumentChecklistRunStatus.INCOMPLETE.value:
             return CommandExecutionResult("assessment.checklist.incomplete", {})
@@ -214,13 +214,12 @@ class AssessmentCommandHandlers:
                 "Completed inherent-risk input was not available."
             )
 
-    async def _require_checklist_run_review(
+    async def _require_submitted_checklist_run(
         self,
         session: AsyncSession,
         *,
         assessment_id: UUID,
         run_id: UUID,
-        review_id: UUID,
     ) -> None:
         run_record = await self.checklist_service.checklist_repository.get_checklist_run_with_items(
             session,
@@ -229,15 +228,15 @@ class AssessmentCommandHandlers:
         )
         if run_record is None:
             raise DocumentChecklistRunNotFoundError()
-        review = await self.checklist_service.checklist_repository.get_item_review_for_run_items(
-            session,
-            assessment_id=assessment_id,
-            review_id=review_id,
-            item_ids=[item.id for item in run_record.items],
-        )
-        if review is None:
+        submitted_by = getattr(run_record.run, "submitted_by", None)
+        if (
+            run_record.run.status != DocumentChecklistRunStatus.SUBMITTED.value
+            or getattr(run_record.run, "submitted_at", None) is None
+            or submitted_by is None
+            or not str(submitted_by).strip()
+        ):
             raise BusinessPreconditionError(
-                "Requested review does not belong to the checklist run."
+                "Checklist run must be submitted before finalization."
             )
 
     async def _require_report_inputs(self, session: AsyncSession, assessment_id: UUID) -> None:

@@ -376,6 +376,7 @@ class AssessmentRepository:
         questions = (await session.execute(
             select(QuestionDefinition).where(
                 QuestionDefinition.questionnaire_version_id == version_id,
+                QuestionDefinition.is_visible.is_(True),
             ).order_by(QuestionDefinition.question_order.asc(), QuestionDefinition.id.asc())
         )).scalars().all()
         if not questions:
@@ -398,7 +399,16 @@ class AssessmentRepository:
         for question in questions:
             response = response_by_question.get(question.id)
             if response is None or response.response_status != "answered":
-                issues.append(RiskInputValidationIssue("SCORABLE_RESPONSE_MISSING", QuestionnaireType.TRIAGE.value, version_id, question.id, response.id if response else None))
+                if question.is_required:
+                    issues.append(
+                        RiskInputValidationIssue(
+                            "REQUIRED_SCORABLE_RESPONSE_MISSING",
+                            QuestionnaireType.TRIAGE.value,
+                            version_id,
+                            question.id,
+                            response.id if response else None,
+                        )
+                    )
                 continue
             if question.response_type == "multi_select":
                 issues.append(RiskInputValidationIssue("UNSUPPORTED_MULTI_SELECT_CONTRACT", QuestionnaireType.TRIAGE.value, version_id, question.id, response.id))
@@ -446,7 +456,15 @@ class AssessmentRepository:
                 weighted_score=qw * ow, max_option_weight=max_ow, max_weighted_score=qw * max_ow,
                 risk_level=RiskLevel(selected.risk_band), risk_signal=selected.risk_signal or "", confidence=1.0,
             ))
-        return TriagedQuestionLoadResult(resolved, len(questions), unresolved, issues)
+        required_question_count = sum(
+            1 for question in questions if question.is_required
+        )
+        return TriagedQuestionLoadResult(
+            resolved,
+            required_question_count,
+            unresolved,
+            issues,
+        )
 
     async def load_required_response_completeness(
         self,

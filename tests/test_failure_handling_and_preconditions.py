@@ -111,6 +111,7 @@ class _ChecklistRepository:
     def __init__(self, *, run_record=None, review=None) -> None:
         self.run_record = run_record
         self.review = review
+        self.review_lookup_count = 0
 
     async def get_checklist_run_with_items(self, session, *, assessment_id, run_id):
         if self.run_record is None:
@@ -123,21 +124,30 @@ class _ChecklistRepository:
         return self.run_record
 
     async def get_item_review_for_run_items(self, session, *, assessment_id, review_id, item_ids):
+        self.review_lookup_count += 1
         if self.review is None or self.review.id != review_id or self.review.source_item_id not in item_ids:
             return None
         return self.review
 
 
 class _ChecklistService:
-    def __init__(self, repository: _ChecklistRepository | None = None) -> None:
+    def __init__(
+        self,
+        repository: _ChecklistRepository | None = None,
+        *,
+        finalize_status: str = DocumentChecklistRunStatus.COMPLETED.value,
+    ) -> None:
         self.checklist_repository = repository or _ChecklistRepository()
         self.generated = 0
+        self.finalized: list[tuple[UUID, UUID]] = []
+        self.finalize_status = finalize_status
 
     async def generate_checklist(self, session, assessment_id):
         self.generated += 1
 
     async def finalize_checklist(self, session, *, assessment_id, run_id):
-        return SimpleNamespace(run=SimpleNamespace(status=DocumentChecklistRunStatus.COMPLETED.value))
+        self.finalized.append((assessment_id, run_id))
+        return SimpleNamespace(run=SimpleNamespace(status=self.finalize_status))
 
 
 class _ReportService:
@@ -234,11 +244,23 @@ def _envelope(command_type: str, payload: dict[str, object] | None = None) -> Me
     )
 
 
-def _checklist_record(*, status: str = DocumentChecklistRunStatus.COMPLETED.value):
+def _checklist_record(
+    *,
+    assessment_id: UUID = ASSESSMENT_ID,
+    status: str = DocumentChecklistRunStatus.SUBMITTED.value,
+    submitted_at: datetime | None = NOW,
+    submitted_by: str | None = "analyst@example.com",
+):
     run_id = uuid4()
     item = SimpleNamespace(id=uuid4(), document_type="SOC 2 Type II")
     return SimpleNamespace(
-        run=SimpleNamespace(id=run_id, assessment_id=ASSESSMENT_ID, status=status),
+        run=SimpleNamespace(
+            id=run_id,
+            assessment_id=assessment_id,
+            status=status,
+            submitted_at=submitted_at,
+            submitted_by=submitted_by,
+        ),
         items=[item],
     )
 
@@ -388,7 +410,73 @@ async def test_checklist_generate_succeeds_with_completed_risk_input() -> None:
 
 
 @pytest.mark.asyncio
-async def test_finalize_rejects_checklist_run_from_another_assessment() -> None:
+async def test_finalize_succeeds_with_submitted_run_and_zero_item_review_rows() -> None:
+    run_record = _checklist_record()
+    repository = _ChecklistRepository(run_record=run_record, review=None)
+    checklist_service = _ChecklistService(repository)
+    handlers = _handlers(checklist_service=checklist_service)
+    action_id = uuid4()
+
+    result = await handlers.finalize_checklist(
+        object(),
+        _envelope(
+            "assessment.checklist.finalize",
+            {"checklistRunId": str(run_record.run.id), "reviewId": str(action_id)},
+        ),
+    )
+
+    assert result.event_type == "assessment.checklist.completed"
+    assert checklist_service.finalized == [(ASSESSMENT_ID, run_record.run.id)]
+    assert repository.review_lookup_count == 0
+
+
+@pytest.mark.asyncio
+async def test_finalize_no_longer_requires_review_id_to_match_item_review() -> None:
+    run_record = _checklist_record()
+    item_review_id = uuid4()
+    repository = _ChecklistRepository(
+        run_record=run_record,
+        review=SimpleNamespace(id=item_review_id, source_item_id=run_record.items[0].id),
+    )
+    checklist_service = _ChecklistService(repository)
+    handlers = _handlers(checklist_service=checklist_service)
+
+    result = await handlers.finalize_checklist(
+        object(),
+        _envelope(
+            "assessment.checklist.finalize",
+            {"checklistRunId": str(run_record.run.id), "reviewId": str(uuid4())},
+        ),
+    )
+
+    assert result.event_type == "assessment.checklist.completed"
+    assert checklist_service.finalized == [(ASSESSMENT_ID, run_record.run.id)]
+    assert repository.review_lookup_count == 0
+
+
+@pytest.mark.asyncio
+async def test_finalize_preserves_incomplete_result_event() -> None:
+    run_record = _checklist_record()
+    checklist_service = _ChecklistService(
+        _ChecklistRepository(run_record=run_record),
+        finalize_status=DocumentChecklistRunStatus.INCOMPLETE.value,
+    )
+    handlers = _handlers(checklist_service=checklist_service)
+
+    result = await handlers.finalize_checklist(
+        object(),
+        _envelope(
+            "assessment.checklist.finalize",
+            {"checklistRunId": str(run_record.run.id), "reviewId": str(uuid4())},
+        ),
+    )
+
+    assert result.event_type == "assessment.checklist.incomplete"
+    assert result.payload == {}
+
+
+@pytest.mark.asyncio
+async def test_finalize_rejects_missing_checklist_run() -> None:
     run_id = uuid4()
     handlers = _handlers(checklist_service=_ChecklistService(_ChecklistRepository(run_record=None)))
 
@@ -403,21 +491,52 @@ async def test_finalize_rejects_checklist_run_from_another_assessment() -> None:
 
 
 @pytest.mark.asyncio
-async def test_finalize_rejects_review_from_another_checklist_run() -> None:
-    run_record = _checklist_record()
-    review = SimpleNamespace(id=uuid4(), source_item_id=uuid4())
-    handlers = _handlers(
-        checklist_service=_ChecklistService(_ChecklistRepository(run_record=run_record, review=review))
+async def test_finalize_rejects_checklist_run_from_another_assessment() -> None:
+    run_record = _checklist_record(assessment_id=uuid4())
+    handlers = _handlers(checklist_service=_ChecklistService(_ChecklistRepository(run_record=run_record)))
+
+    with pytest.raises(DocumentChecklistRunNotFoundError):
+        await handlers.finalize_checklist(
+            object(),
+            _envelope(
+                "assessment.checklist.finalize",
+                {"checklistRunId": str(run_record.run.id), "reviewId": str(uuid4())},
+            ),
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "submitted_at", "submitted_by"),
+    [
+        (DocumentChecklistRunStatus.DRAFT.value, NOW, "analyst@example.com"),
+        (DocumentChecklistRunStatus.SUBMITTED.value, None, "analyst@example.com"),
+        (DocumentChecklistRunStatus.SUBMITTED.value, NOW, None),
+        (DocumentChecklistRunStatus.SUBMITTED.value, NOW, " "),
+    ],
+)
+async def test_finalize_rejects_unsubmitted_checklist_run(
+    status: str,
+    submitted_at: datetime | None,
+    submitted_by: str | None,
+) -> None:
+    run_record = _checklist_record(
+        status=status,
+        submitted_at=submitted_at,
+        submitted_by=submitted_by,
     )
+    checklist_service = _ChecklistService(_ChecklistRepository(run_record=run_record))
+    handlers = _handlers(checklist_service=checklist_service)
 
     with pytest.raises(BusinessPreconditionError):
         await handlers.finalize_checklist(
             object(),
             _envelope(
                 "assessment.checklist.finalize",
-                {"checklistRunId": str(run_record.run.id), "reviewId": str(review.id)},
+                {"checklistRunId": str(run_record.run.id), "reviewId": str(uuid4())},
             ),
         )
+    assert checklist_service.finalized == []
 
 
 @pytest.mark.asyncio
